@@ -1,0 +1,1993 @@
+---
+title: "Introduction to Machine Learning in R"
+subtitle: "Lab 2: Supervised Learning"
+format: pdf
+toc: true
+bibliography: ["../slides/references.bib"]
+---
+
+# Load Required Packages
+
+```{r 05-regression-1, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(tidymodels)
+library(modelsummary)
+library(skimr)
+library(naniar)
+library(xgboost)
+library(vip)
+library(kableExtra)
+```
+
+
+
+# 1. Preprocessing data: recipes & workflows
+
+## A short recipe example
+
+* **Example below**: A recipe containing an outcome plus two numeric predictors that centers and scale (“normalize”) the predictors
+
+```{r 07-preprocessing-data-recipes-1}
+load(file = here("data/data_ess.Rdata"))
+```
+
+We start by loading the data and selecting a subset for illustration. We also inspect the data to identify any differences later.
+
+```{r 07-preprocessing-data-recipes-2 }
+# Select a few variables for illustration
+data <- data %>% 
+  select(respondent_id, life_satisfaction, age, education, internet_use_frequency, religion)
+datasummary_skim(data, type = "numeric")
+datasummary_skim(data, type = "categorical")
+```
+
+Then we define our recipe (the single steps are concatenated with `%>%`). Make sure that you pick an order that makes sense, e.g., add polynomials to numeric variables before you convert categorical variables to numeric:
+
+```{r 07-preprocessing-data-recipes-3 }
+
+recipe1 <- # Store recipe in object recipe 1
+  
+# Step 1: Define formula and data
+    # "." -> all predictors
+  recipe(life_satisfaction ~ ., data = data) %>% # Define formula; use "." to select all predictors in dataset
+
+# Step 2: Define roles
+  update_role(respondent_id, new_role = "ID") %>% # Define ID variable
+
+# Step 3: Handle Missing Values
+  step_naomit(all_predictors()) %>%
+  
+# Step 4: Feature Scaling (if applicable)
+  # Assuming you have numerical features that need scaling
+  step_normalize(all_numeric_predictors()) %>%
+  
+# Step 5: Add polynomials for all numeric predictors
+  step_poly(all_numeric_predictors(), degree = 2, 
+            keep_original_cols = TRUE,
+            options = list(raw = TRUE)) %>%
+  
+# Step 6: Encode Categorical Variables (AFTER TREATING OTHER NUMERIC VARIABLES)
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+  # see also step_ordinalscore() to convert to numeric
+  
+# Inspect the recipe
+  recipe1
+```
+
+Now we can apply the recipe to some data and explore how the data changes:
+
+```{r 07-preprocessing-data-recipes-4}
+# Now you can apply the recipe to your data
+data_preprocessed <- prep(recipe1, data)
+
+# Access and inspect the preprocessed data with $
+# View(data_preprocessed$template)
+skim(data_preprocessed$template)
+```
+
+Usually the recipe is simply part of the workflow. Hence, we do not need to use the `prep()` and `bake()` function. Below we'll see an example. Besides, recipes can include a wide variety of preprocessing steps including functions such as `themis::step_downsample()`, `step_corr()` and `step_rm()` to downsample outcome data and omit highly correlated predictors.
+
+## A short workflow example
+
+```{r 07-preprocessing-data-recipes-5}
+# Below we simply use one dataset (and do not split)
+  dim(data)
+  names(data)
+
+# Define a recipe for preprocessing (taken from above)
+  recipe1 <- 
+    recipe(life_satisfaction ~ ., data = data) %>% # Define formula; 
+    update_role(respondent_id, new_role = "ID") %>% # Define ID variable
+    step_unknown(religion) %>% # Change missings to unknown
+    step_naomit(all_predictors()) %>%
+    step_normalize(all_numeric_predictors()) %>%
+    step_poly(all_numeric_predictors(), degree = 2, 
+            keep_original_cols = TRUE,
+            options = list(raw = TRUE)) %>%
+    step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# Define a model
+  model1 <- linear_reg() %>% # linear model
+    set_engine("lm") %>% # lm engine
+    set_mode("regression") # regression problem
+
+  
+# Define a workflow
+  workflow1 <- workflow() %>% # create empty workflow
+    add_recipe(recipe1) %>% # add recipe
+    add_model(model1) # add model
+
+  workflow1 # Inspect
+  
+  
+# Train the model (on all the data.. no split here..)
+  fit1 <- fit(workflow1, data = data)
+
+# Print summary of the trained model
+  fit1
+```
+
+
+## Exercise: Using a workflow to built a linear predictive model
+
+1. See earlier description of the data (Slides day 1)
+2. Below you find code that uses a workflow (recipe + model) to built a predictive model. 
+3. Start be running the code (loading the packages and data beforehand). How accurate is the model in the training and testdataset? 
+4. Then rerun the code after the marker "AFTER SPLIT" and change the preprocessing steps, e.g., increase the `degree` in `step_poly()` (and more if you like). How does the accuracy in training and test data change after you edit the preprocessing steps? (Important: Normally we would run such tests with a validation dataset. Once happy we would tes the model on the final dataset.)
+
+We first import the data into R:
+
+```{r 07-preprocessing-data-recipes-8, eval=FALSE}
+load(file = here("data/data_ess.Rdata"))
+
+# Subset variables
+data <- data %>% 
+  select(respondent_id, life_satisfaction, age, education, 
+         internet_use_frequency, religion, trust_people)
+
+
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+  
+# Split the data into training and test data
+  set.seed(1234)
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+  
+  
+# AFTER SPLIT
+  
+# Define a recipe for preprocessing (taken from above)
+  recipe1 <- recipe(life_satisfaction ~ ., data = data_train) %>% # Define formula; 
+    update_role(respondent_id, new_role = "ID") %>% # Define ID variable
+    step_impute_mean(all_numeric_predictors()) %>%
+    step_naomit(all_predictors()) %>%
+    step_normalize(all_numeric_predictors()) %>%
+    step_poly(all_numeric_predictors(), degree = 1, 
+            keep_original_cols = TRUE,
+            options = list(raw = TRUE)) %>%
+    step_dummy(all_nominal_predictors(), one_hot = TRUE)
+  
+  recipe1
+  
+# Define a model
+  model1 <- linear_reg() %>% # linear model
+    set_engine("lm") %>% # lm engine
+    set_mode("regression") # regression problem
+  
+# Define a workflow
+  workflow1 <- workflow() %>% # create empty workflow
+    add_recipe(recipe1) %>% # add recipe
+    add_model(model1) # add model  
+  
+# Fit the workflow (including recipe and model)
+  fit1 <- workflow1 %>% fit(data = data_train)
+
+
+# Training data: Add predictions & calculate metrics
+  augment(fit1, data_train) %>%
+    metrics(truth = life_satisfaction, estimate = .pred)
+  
+# Test data: Add predictions & calculate metrics
+  augment(fit1, data_test) %>%
+    metrics(truth = life_satisfaction, estimate = .pred)
+  
+```
+
+## Appendix: Other preprocessing&/preparation steps
+
+### Dropping data
+
+```{r 07-preprocessing-data-recipes-9 }
+# Dropping data
+data <- data %>% 
+  drop_na(life_satisfaction) %>% # Drop missing on outcome
+  select(where(~mean(is.na(.)) < 0.5)) # select features with less than X % missing
+
+# data_listwise <- data %>% na.omit() # Listwise deletion (Be careful!)
+  
+```
+
+### Discretizing data
+
+Sometimes it makes sense to discretize data, i.e., convert it to less categories. Below we create a new variable based on `internet_use_time` with four categories:
+
+
+```{r 07-preprocessing-data-recipes-10 }
+load(file = here("data/data_ess.Rdata"))
+
+# Dropping data
+data <- data %>% 
+  mutate(internet_use_time_cut = cut_interval(internet_use_time, 4))
+
+ggplot(data = data,
+       aes(x = internet_use_time_cut,
+           y = internet_use_time)) +
+  geom_boxplot()
+```
+
+### Deleting variables with too many categories
+
+Below we use a loop to explore whether our data contains factor variables that have many values. Subsequently, we could delete them.
+
+```{r 07-preprocessing-data-recipes-11 }
+# Identify factors with too many levels
+
+  # Identify factors with too many levels
+    for(i in names(data)){
+
+      if(!is.factor(data %>% pull(i))) next # Skip non-factors
+
+      if(length(levels(data %>% pull(i)))<9) next # Skip if levels < X
+
+      cat("\n\n\n",i,"\n") # Print variable
+      print(levels(data %>% pull(i))) # Print levels
+
+      Sys.sleep(0) # Increase if many variables
+
+    }
+
+```
+
+Afterwards we could decide to drop those variables or to recode them in some fashion.
+
+
+
+# 2. Resampling & cross-validation
+
+## Evaluate a classification model using training, validation and test dataset
+
+```{r 08-resampling-4}
+load(file = here("data/data_compas.Rdata"))
+```
+
+Steps:
+
+1. Split data into training, validation and test data.
+2. Define the recipe & model
+3. Bundle the model/formula into a workflow
+4. Fit the workflow on the training data and evaluate on validation data -> if not happy change workflow/recipe/model
+5. If happy with the accuracy estimate model on complete training dataset (analysis + assessment) and evaluate accuracy in test data (holdout dataset)
+
+```{r 08-resampling-5 }
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(is_recid))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(is_recid) # ?drop_na
+  dim(data)
+
+
+# 1.
+# Split the data into training, validation and test data
+  set.seed(1234)
+  data_split <- initial_validation_split(data, prop = c(0.6, 0.2))
+  data_split # Inspect
+
+# Extract the datasets
+  data_train <- training(data_split)
+  data_validation <- validation(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+  dim(data_train)
+  dim(data_validation)
+  dim(data_test)
+
+
+# 2.
+# Define the recipe & model
+  recipe1 <- recipe(is_recid_factor ~ age + priors_count + 
+                      sex + race, data = data_train)
+  
+  model1 <- logistic_reg() %>% 
+    set_engine("glm") %>% # lm engine
+    set_mode("classification") # regression problem
+  
+# 3.
+# Create workflow
+  workflow1 <- 
+  workflow() %>% 
+  add_model(model1) %>%
+  add_recipe(recipe1)
+
+# 4. Fit the workflow on training set & accuracy
+  fit_train <- workflow1 %>% fit(data = data_train)
+
+  data_train <- augment(fit_train, data_train, 
+                        type.predict = "response") 
+
+  data_train %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)  
+  
+
+  # Predict & assess metrics in validation set
+  augment(fit_train, data_validation, # Make sure to use training fit!
+          type.predict = "response") %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)    
+  
+  
+# 5. If happy fit workflow on full 
+  # training set (data_train + data validation) 
+  # and predict values on test set
+  data_training_full <- bind_rows(data_train, data_validation)
+  fit_train_full <- workflow1 %>% fit(data = data_training_full)
+  
+  # Predict and assess accuracy
+  augment(fit_train_full, data_test, 
+          type.predict = "response") %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)   
+```
+
+
+## Evaluate a classification model with resampling
+
+```{r 08-resampling-7}
+load(file = here("data/data_compas.Rdata"))
+```
+
+Steps:
+
+1. Initial first split of the data
+2. Create resampled partitions/folds with `vfold_cv()`
+3. Define the recipe & model
+4. Bundle the model/formula into a workflow
+5. Fit the workflow on the resamples/folds & extract accuracy metrics
+6. If happy with the accuracy estimate model on complete training dataset and evaluate accuracy in test data (holdout dataset)
+
+```{r 08-resampling-8 }
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% 
+                  filter(is.na(is_recid_factor))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(is_recid_factor) # ?drop_na
+  dim(data)
+
+# 1.
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.8)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+# 2.  
+# Create resampled partitions of training data
+  set.seed(345)
+  data_folds <- vfold_cv(data_train, v = 10) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+  # v = 10 -> n/10 gives number of validation set observation in each fold
+
+  
+  
+# 3.
+# Define the recipe & model
+  recipe1 <- recipe(is_recid_factor ~ age + priors_count + 
+                      sex + race, data = data_train)
+  
+  model1 <- logistic_reg() %>% 
+    set_engine("glm") %>% # lm engine
+    set_mode("classification") # regression problem
+  
+# 4.
+# Create workflow
+  workflow1 <- 
+  workflow() %>% 
+  add_model(model1) %>%
+  add_recipe(recipe1)
+
+# 5. Fit the workflow on the folds/resamples
+  # There is no need in specifying 
+  # data_analysis/data_assessment as 
+  # the functions understand the corresponding parts
+  fit1 <- 
+  workflow1 %>% 
+  fit_resamples(resamples = data_folds)
+  # add argument "control" to keep predictions
+    # control = control_resamples(save_pred = TRUE, extract = function (x) extract_fit_parsnip(x))
+  
+  fit1
+  
+# Extract single components from folds
+  fit1$.metrics[1:2] # get first two rows of .metrics
+
+  
+# 6. 
+# Collect metrics across resamples
+  collect_metrics(fit1)
+```
+
+If we are happy with the average accuracy of our model of `r round(tune::collect_metrics(fit1)$mean[1],2)` across resamples we would then use the same model defined above, fit it on the whole (non-splitted) training dataset and create a new fitted model `fit2`. We can evaluate the accuracy of that new model in the training set and then move to the test data further below.
+
+```{r 08-resampling-9}
+# 7. 
+  # Fit on training dataset (fit2!!!)
+  fit2 <- workflow1 %>% fit(data = data_train)
+
+  
+# Training data: Add predictions 
+  data_train <- augment(fit2, data_train, type.predict = "response") 
+
+  head(data_train %>%
+      select(is_recid_factor, age, .pred_class, 
+             .pred_no, .pred_yes))
+
+# Training data: Metrics
+  data_train %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+```
+
+And finally evaluate the model using the test data (holdout set).
+  
+```{r 08-resampling-10}
+# 8. 
+# Test data: Add predictions 
+  data_test <- augment(fit2, data_test, type.predict = "response")
+
+  head(data_test %>%
+      select(is_recid_factor, age, .pred_class, .pred_no, .pred_yes))
+
+# Test data: Metrics
+  data_test %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+  
+# More accuracy metrics
+  metrics_combined <- metric_set(accuracy, precision, recall, f_meas)
+
+  # The returned function has arguments:
+  data_test %>% 
+  metrics_combined(truth = is_recid_factor, estimate = .pred_class)
+  
+# Cross-classification table
+  conf_mat(data = data_test,
+           truth = is_recid_factor, estimate = .pred_class)
+
+  
+```
+
+### Visual assessment of accuracy
+
+@fig-roc-curve displays the ROC curve. The corresponding values can be obtained using the `roc_curve()` function.
+
+* Important (`?roc_curve`): "There is no common convention on which factor level should automatically be considered the "event" or "positive" result when computing binary classification metrics. In yardstick, the default is to use the first level. To alter this, change the argument event_level to "second" to consider the last level of the factor the level of interest."   
+    - Here we pick the 1s, i.e., recidivating as the "event" or "positive" result.
+
+
+```{r 08-resampling-11 }
+#| label: fig-roc-curve
+#| fig-cap: "Precision, recall and threshold values"
+data_test %>% 
+  roc_curve(truth = is_recid_factor, 
+            .pred_yes,
+            event_level = "second") %>% 
+  autoplot() + 
+  xlab("1 - specificity (FPR = FP/N, false positives rate)") +
+  ylab("sensitivity (TPR = TP/P, true positives rate)")
+```
+
+And we can also calculate the area under the ROC curve (the higher the better with 1 being the maximum): 
+
+```{r 08-resampling-12 }
+# Compute area under ROC curve
+data_test %>% 
+    roc_auc(truth = is_recid_factor, 
+            .pred_yes,
+              event_level = "second")
+```
+
+Importantly, the ROC curve does not provide information on how FPR and TPR change as a function of the threshold. In @fig-error-threshold we visualize both precision and recall (TPR) as a function of the threshold. The `pr_curve()` function can be used to calculate the corresponding values and we could also change it to FPR vs. TPR.
+
+```{r 08-resampling-13 }
+#| label: fig-error-threshold
+#| fig-cap: "Precision, recall and threshold values"
+
+library(ggplot2)
+library(dplyr)
+
+data_test %>% 
+  pr_curve(truth = is_recid_factor, 
+           .pred_yes,
+           event_level = "second") %>%
+  pivot_longer(cols = c("recall", "precision"),
+               names_to = "measure",
+               values_to = "value") %>%
+  mutate(measure = recode(measure,
+                          "recall" = "Recall (= True pos. rate = TP/P = sensitivity)",
+                          "precision" = "Precision (= Pos. pred. value = TP/P*)")) %>%
+  ggplot(aes(x = .threshold, 
+             y = value,
+             color = measure)) +
+  geom_line() +
+  xlab("Threshold value") +
+  ylab("Value of measure") +
+  theme_bw()
+```
+
+
+## Exercise
+
+1. Start by re-reading the code presented above (which you can find in the chunk below) to see whether everything is clear.
+2. Above we re-evaluated the accuracy of our model using 10-fold cross validation. Please re-evaluate the model but now compare the setting where you use k-Fold Cross-Validation using 5 folds (k = 5) and 20 folds (k = 20). Do you find any differences?
+3. Keep the same predictors but change the recipe and add polynomials for the numeric variables `age`, `priors_count` and use one_hot encoding for the `race` variable.^[`step_poly(all_numeric_predictors(), degree = 4, keep_original_cols = TRUE, options = list(raw = TRUE)) %>% step_dummy(race, one_hot = TRUE)`] Does it change the accuracy?
+4. Finally, shorty outline the advantages and disadvantages of the *validation set approach* (training/analyis vs. validation/assessment vs. test data), *Leave-one-out cross-validation (LOOCV)* and *k-Fold Cross-Validation* (e.g., discuss dataset sizes, representativeness, computational efficiency).
+
+```{r 08-resampling-14, eval=FALSE}
+load(file = here("data/data_compas.Rdata"))
+
+# 1.
+# Split the data into training and test data
+  set.seed(345)
+  data_split <- initial_split(data, prop = 0.8)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+# 2.  
+# Create resampled partitions of training data
+  data_folds <- vfold_cv(data_train, v = 10) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+  # You can also try loo_cv(data_train) instead
+
+  
+  
+# 3.
+# Define the recipe & model
+  recipe1 <- recipe(is_recid_factor ~ age + priors_count + 
+                      sex + race, data = data_train) %>%
+    step_poly(all_numeric_predictors(), degree = 4, 
+              keep_original_cols = FALSE, 
+              options = list(raw = TRUE)) %>% 
+    step_dummy(race, one_hot = TRUE)
+  
+  model1 <- logistic_reg() %>% 
+    set_engine("glm") %>% # lm engine
+    set_mode("classification") # regression problem
+  
+# 4.
+# Create workflow
+  workflow1 <- 
+  workflow() %>% 
+  add_model(model1) %>%
+  add_recipe(recipe1)
+
+# 5. Fit the workflow on the folds/resamples
+  # There is no need in specifying data_analysis/data_assessment as 
+  # the functions understand the corresponding parts
+  fit1 <- 
+  workflow1 %>% 
+  fit_resamples(resamples = data_folds,
+                control = control_resamples(save_pred = TRUE,
+                                            extract = function (x) extract_fit_parsnip(x)))
+  fit1
+  
+# Extract single components from folds
+  fit1$.metrics[1:2] # get first two rows of .metrics
+  fit1$.extracts [1:2] # get first two rows of .extracts
+  fit1$.extracts[[1]]$.extracts # Extract models
+
+  
+# 6. 
+# Collect metrics across resamples
+  collect_metrics(fit1)
+
+# 7. 
+  # Fit on training dataset (fit2!!!)
+  fit2 <- workflow1 %>% fit(data = data_train)
+
+  
+# Training data: Add predictions & get metrics
+  augment(fit2, data_train, type.predict = "response")  %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+
+  
+  
+# 8.   
+# Test data: Add predictions & get metrics
+  augment(fit2, data_test, type.predict = "response") %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+  
+# More accuracy metrics
+  metrics_combined <- metric_set(accuracy, precision, recall, f_meas)
+
+  augment(fit2, data_test, type.predict = "response") %>%
+  metrics_combined(truth = is_recid_factor, estimate = .pred_class)
+  
+# Cross-classification table
+  augment(fit2, data_test, type.predict = "response") %>%
+      conf_mat(data = .,
+             truth = is_recid_factor, estimate = .pred_class)
+           
+  
+```
+
+
+
+# 3. Feature selection & regularization
+
+## Ridge Regression
+
+We first import the data into R:
+
+```{r 09-feature-selection-2}
+load(file = here("data/data_ess.Rdata"))
+```
+
+Below we split the data and create resampled partitions with `vfold_cv()` stored in an object called `data_folds`. Hence, we have the original `data_train` and `data_test` but also already resamples of `data_train` in `data_folds`.
+
+```{r 09-feature-selection-5 }
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+
+
+# Split the data into training and test data
+  set.seed(345)
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+  
+# Create resampled partitions
+  data_folds <- vfold_cv(data_train, v = 5) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+  # You can also try loo_cv(data_train) instead
+  
+```
+
+The training data has `r nrow(data_train)` rows, the test data has `r nrow(data_test)`. The training data is further split into 10 folds.
+
+Next, we provide a quick example of a ridge regression (beware: below in the recipe we standardize predictors). 
+
+* Arguments of `glmnet` `linear_reg()`
+    + `mixture = 0`: to specify a ridge model
+        + `mixture = 0` specifies only ridge regularization
+        + `mixture = 1` specifies only lasso regularization
+        + Setting mixture to a value between 0 and 1 lets us use both
+    + `penalty = 0`: Penality we need to set when using `glmnet` engine (for now 0)
+  
+  
+```{r 09-feature-selection-6, warning=FALSE}
+# Define a recipe for preprocessing
+  recipe1 <- recipe(life_satisfaction ~ ., data = data_train) %>%
+    update_role(respondent_id, new_role = "ID") %>% # define as ID variable
+    step_filter_missing(all_predictors(), threshold = 0.01) %>%
+    step_naomit(all_predictors()) %>%
+    step_zv(all_numeric_predictors()) %>% # remove predictors with zero variance
+    step_normalize(all_numeric_predictors()) %>% # normalize predictors
+    step_dummy(all_nominal_predictors())
+
+  # Extract and preview data + recipe (direclty with $)
+  data_preprocessed <- prep(recipe1, data_train)$template
+  dim(data_preprocessed)
+  
+# Define a model
+  model1 <- linear_reg(mixture = 0, penalty = 2) %>% # ridge regression model
+    set_engine("lm") %>% # lm engine
+    set_mode("regression") # regression problem
+  
+# Define a workflow
+  workflow1 <- workflow() %>% # create empty workflow
+    add_recipe(recipe1) %>% # add recipe
+    add_model(model1) # add model  
+  
+# Fit the workflow (including recipe and model)
+  fit1 <- workflow1 %>% 
+    fit_resamples(resamples = data_folds, # specify cv-datasets
+    metrics = metric_set(rmse, rsq, mae))
+
+  collect_metrics(fit1)
+  
+```
+
+If we are happy with the performance of our model (evaluated using resampling), we can fit it on the full training set and use the resulting parameters to obtain predictions in the test dataset. Subsequently we calculate the accuracy in the test data.
+
+
+```{r 09-feature-selection-7, warning=FALSE}
+# Fit model in full training dataset
+  fit_final <- workflow1 %>% 
+              parsnip::fit(data = data_train)
+  # Inspect coefficients: tidy(fit_final)
+
+# Test data: Predictions + accuracy
+  metrics_combined <- metric_set(mae, rmse, rsq) # Use several metrics
+  
+  augment(fit_final , new_data = data_test) %>%
+    metrics_combined(truth = life_satisfaction, estimate = .pred)
+```
+
+
+## Lasso
+
+We first import the data into R:
+
+```{r 09-feature-selection-9}
+load(file = here("data/data_ess.Rdata"))
+```
+
+
+Below we split the data and create resampled partitions with `vfold_cv()` stored in an object called `data_folds`. Hence, we have the original `data_train` and `data_test` but also already resamples of `data_train` in `data_folds`.
+
+
+```{r 09-feature-selection-10 }
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+
+
+# Split the data into training and test data
+  set.seed(345)
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+  
+# Create resampled partitions
+  data_folds <- vfold_cv(data_train, v = 5) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+```
+
+
+
+```{r 09-feature-selection-11, warning=FALSE}
+# Define the recipe
+recipe2 <- recipe(life_satisfaction ~ ., data = data_train) %>%
+    update_role(respondent_id, new_role = "ID") %>% # define as ID variable
+    step_filter_missing(all_predictors(), threshold = 0.01) %>%
+    step_naomit(all_predictors()) %>%
+    step_zv(all_numeric_predictors()) %>% # remove predictors with zero variance
+    step_normalize(all_numeric_predictors()) %>% # normalize predictors
+    step_dummy(all_nominal_predictors())
+
+# Specify the model
+  model2 <- 
+    linear_reg(penalty = 0.1, mixture = 1) %>% 
+    set_mode("regression") %>% 
+    set_engine("glmnet") 
+
+# Define the workflow
+  workflow2 <- workflow() %>% 
+    add_recipe(recipe2) %>% 
+    add_model(model2)
+
+
+# Fit the workflow (including recipe and model)
+  fit2 <- workflow2 %>% 
+    fit_resamples(resamples = data_folds, # specify cv-datasets
+    metrics = metric_set(rmse, rsq, mae))
+
+  
+  collect_metrics(fit2)
+  
+  
+  
+# Fit model in full training dataset
+  fit_final <- workflow2 %>% 
+              parsnip::fit(data = data_train)
+  
+# Inspect coefficients
+  tidy(fit_final) %>% filter(estimate!=0)
+
+# Test data: Predictions + accuracy
+  metrics_combined <- metric_set(mae, rmse, rsq) # Use several metrics
+  
+  augment(fit_final , new_data = data_test) %>%
+    metrics_combined(truth = life_satisfaction, estimate = .pred)
+```
+
+
+## Exercise
+
+Revise the code chunk below by replacing all `...`
+
+1. Use the data from above ([European Social Survey (ESS)](https://www.europeansocialsurvey.org/)). Use the code below to load it, drop missings and to produce training, test as well as resampled data.
+2. Define three models (`model1` = linear regression, `model2` = ridge regression, `model3` = lasso regression) and create two recipes, `recipe1` for the linear regression (the model should only include three predictors: `unemployed + age + education`) and `recipe2` for the other two models. Store the three models and two recipes in three workflows `workflow1`, `workflow2`, `workflow3`
+3. Train these three workflows and evaluate their accuracy using resampling (below some code to get you started).
+4. Pick the best workflow (and corresponding model), fit it on the whole training data and evaluate the accuracy on the test data.
+
+
+We first import the data into R:
+
+```{r 09-feature-selection-13, eval=FALSE}
+load(file = here("data/data_ess.Rdata"))
+```
+
+```{r 09-feature-selection-14, eval = FALSE}
+# 1. ####
+# Drop missings on outcome
+  data <- data %>% 
+    drop_na(life_satisfaction) %>% # Drop missings on life satisfaction
+    select(where(~mean(is.na(.)) < 0.1)) %>% # keep vars with lower than 10% missing
+    na.omit()
+
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_... <- testing(data_split) # Do not touch until the end!
+
+# Create resampled partitions
+  set.seed(345)
+  data_folds <- vfold_cv(..., v = 5) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+  
+  
+  
+# 2. ####  
+# RECIPES
+  recipe1 <- recipe(life_satisfaction ~ unemployed + age + education, data = data_train) %>%
+    step_zv(all_predictors()) %>% # remove predictors with zero variance
+    step_normalize(all_numeric_predictors())  %>% # normalize predictors
+    step_dummy(all_nominal_predictors())
+
+
+  recipe2 <- recipe(life_satisfaction ~ ., data = ...) %>%
+    update_role(respondent_id, new_role = "ID") %>% # define as ID variable
+    step_zv(all_predictors()) %>% # remove predictors with zero variance
+    step_normalize(all_numeric_predictors()) %>% # normalize predictors
+    step_dummy(all_nominal_predictors())
+  
+# MODELS
+  model1 <- linear_reg() %>% # linear model
+    set_engine("lm") %>% # lm engine
+    set_mode("regression") # regression problem
+  
+  model2 <- linear_reg(mixture = 0, penalty = 0) %>% # ridge regression model
+    set_engine("glmnet") %>%
+    set_mode("regression") # regression problem
+  
+  model3 <- 
+    linear_reg(penalty = 0.05, mixture = 1) %>% 
+    ... %>%
+    ... 
+
+  
+# WORKFLOWS
+  workflow1 <- workflow() %>% 
+                  add_recipe(recipe1) %>% 
+                  add_model(model1)  
+  
+  workflow2 <- ...
+  
+  workflow3 <- workflow() %>% 
+                  add_recipe(recipe2) %>% 
+                  add_model(model3) 
+  
+  
+# 3. ####
+# TRAINING/FITTING
+  fit1 <- workflow1 %>% fit_resamples(resamples = data_folds)
+  fit2 <- ...
+  fit3 <- ...
+  
+# RESAMPLED DATA: COLLECT METRICS  
+  collect_metrics(fit1)
+  collect_metrics(...)
+  collect_metrics(...)
+  # Lasso performed best!!
+  
+# FIT LASSO TO FULL TRAINING DATA
+  fit_lasso <- ... %>% parsnip::fit(data = ...)
+  
+# Metrics: Training data
+  metrics_combined <- metric_set(rsq, rmse, mae)
+  
+  augment(fit_lasso, new_data = ...) %>%
+    metrics_combined(truth = life_satisfaction, estimate = .pred)
+  
+# Metrics: Test data
+  augment(fit_lasso, new_data = ...) %>%
+    metrics_combined(truth = life_satisfaction, estimate = ...)
+```
+
+
+
+# 4. Tree-based methods
+
+* Below the steps we would pursue WITHOUT tuning our random forest.
+  + **Step 1**: Load data, recode and rename variables
+  + **Step 2**: Split the data
+  + **Step 3**: Specify recipe, model and workflow
+  + **Step 4**: Evaluate model using resampling
+  + **Step 5**: Fit final model to full training data and assess accuracy
+  + **Step 6**: Fit final model to test data and assess accuracy
+
+## Step 1: Loading, renaming and recoding
+
+We first import the data into R:
+
+```{r 10-tree-based-methods-2}
+load(file = here("data/data_ess.Rdata"))
+```
+
+## Step 2: Prepare & split the data
+
+Below we split the data and create resampled partitions with `vfold_cv()` stored in an object called `data_folds`. Hence, we have the original `data_train` and `data_test` but also already resamples of `data_train` in `data_folds`.
+
+
+```{r 10-tree-based-methods-3 }
+# Take subset of variables to speed things up!
+  data <- data  %>%
+    select(life_satisfaction,
+           unemployed,
+           trust_people,
+           education,
+           age,
+           religion,
+           subjective_health) %>%
+  mutate(religion = if_else(is.na(religion), "unknown", religion),
+         religion = as.factor(religion)) %>%
+    drop_na()
+
+
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+
+# Split the data into training and test data
+  set.seed(100)
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+# Create resampled partitions
+  set.seed(345)
+  data_folds <- vfold_cv(data_train, v = 5) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+```
+
+Our test data data_test contains `r nrow(data_test)` observations. The training data (from which we generate the folds) contains `r nrow(data_train)` observations.
+
+## Step 3: Specify recipe, model and workflow
+
+Below we define different pre-processing steps in our recipe (see `# comments` in the chunk):
+
+```{r 10-tree-based-methods-4 }
+# Define recipe
+recipe1 <- 
+  recipe(formula = life_satisfaction ~ ., data = data_train) %>% 
+  step_nzv(all_predictors()) %>% # remove variables with zero variances
+  step_novel(all_nominal_predictors()) %>% # prepares data to handle previously unseen factor levels 
+  #step_dummy(all_nominal_predictors()) %>% # dummy codes categorical variables
+  step_zv(all_predictors()) #%>% # remove vars with only single value
+  #step_normalize(all_predictors()) # normale predictors
+
+# Inspect the recipe
+  recipe1
+  
+  # Extract and preview data + recipe (direclty with $)
+  data_preprocessed <- prep(recipe1, data_train)$template
+  dim(data_preprocessed)
+```
+
+Then we specify our random forest model choosing a `mode`, `engine` and specifying the workflow with `workflow()`: 
+
+```{r 10-tree-based-methods-5 }
+# show engines/package that include random forest
+show_engines("rand_forest")
+
+# Specify model
+model1 <- 
+  rand_forest(trees = 1000) %>% # grow 1000 trees!
+  set_engine("ranger", 
+             importance = "permutation") %>% 
+  set_mode("regression")
+
+# Specify workflow
+workflow1 <- 
+  workflow() %>% 
+  add_recipe(recipe1) %>%
+  add_model(model1)
+```
+
+## Step 4: Fit/train & evalute model using resampling
+
+Then we fit the random forest to our resamples of the training data (different splits into analysis and assessment data) to be better able to evaluate it accounting for possible variation across subsets: 
+
+```{r 10-tree-based-methods-6 }
+# Fit the random forest to the cross-validation datasets
+fit1 <- workflow1 %>% 
+  fit_resamples(resamples = data_folds, # specify cv-datasets
+  metrics = metric_set(rmse, rsq, mae)) # save models
+```
+
+And we can evaluate the metrics:
+
+```{r 10-tree-based-methods-7 }
+# RMSE and RSQ
+collect_metrics(fit1)
+```
+
+Q: What do the different variables and measures stand for?
+
+* `.metric` = the measures; `.estimator` = type of estimator; `mean` = mean of measure across folds;  `n` = number of folds; `std_err` = standard error across folds;  `.config` = ?
+* **MAE (Mean Absolute Error)**: This is a measure of the average magnitude of errors between predicted and actual values. It is calculated as the sum of absolute differences between predictions and actuals divided by the total number of data points. MAE is easy to interpret because it represents the average distance between predictions and actuals, but it can be less sensitive to large errors than other measures like RMSE.
+* **RMSE (Root Mean Squared Error)**: This is another measure of the difference between predicted and actual values that takes into account both the size and direction of the errors. It is calculated as the square root of the mean of squared differences between predictions and actuals. RMSE penalizes larger errors more heavily than smaller ones, making it a useful metric when outliers or extreme values may have a significant impact on model performance. However, its units are not always easily interpreted since they depend on the scale of the dependent variable.
+* **Rsquared ($R^2$)**: Also known as coefficient of determination, this metric compares the goodness-of-fit of a regression line by measuring the proportion of variance in the dependent variable that can be explained by the independent variables. An $R^2$ score ranges from 0 to 1, with 1 indicating perfect correlation between the predicted and actual values. However, keep in mind that high $R^2$ does not necessarily imply causality or generalizability outside the sample used to train the model.
+
+
+## Step 5: Fit final model to training data
+
+Once we we are happy with our random forest model (after having used resampling to assess it and potential alternatives) we can fit our workflow that includes the model to the complete training data `data_train` and also assess it's accuracy for the training data again.
+
+```{r 10-tree-based-methods-8 }
+# Fit final model
+fit_final <- fit(workflow1, data = data_train)
+
+# Check accuracy in for full training data
+  metrics_combined <- 
+    metric_set(rsq, rmse, mae) # Set accuracy metrics
+
+
+  augment(fit_final, new_data = data_train) %>%
+      metrics_combined(truth = life_satisfaction, estimate = .pred)  
+  
+```
+
+Now, we can also explore the variable importance of different predictors and visualize it in @fig-vip-first. The `vip()` does only like objects of class ranger, hence we have to directly access ist in the layer object using `fit_final$fit$fit$fit`
+
+```{r 10-tree-based-methods-9 }
+#| label: fig-vip-first
+#| fig-cap: "Variable importance for different predictors"
+# Visualize variable importance
+fit_final$fit$fit$fit %>%
+    vip::vip(geom = "point") +
+  ylab("Importance of different predictors")+
+  xlab("Variables")
+```
+
+Q: What do we see here?
+
+- @fig-vip-first indicates that trust_people is among the most important predictors.
+
+
+## Step 6: Fit final model to test data and assess accuracy {#sec-singlerf-finalmodel}
+
+We then use the model `fit_final` fitted/trained on the training data and evaluate the accuracy of this model which is based on the training data using the test data `data_test`. We use `augment()` to obtain the predictions: 
+
+```{r 10-tree-based-methods-10 }
+# Test data: Predictions & accuracy
+# Test data: Predictions + accuracy
+  regression_metrics <- metric_set(mae, rmse, rsq) # Use several metrics
+  
+  augment(fit_final , new_data = data_test) %>%
+    regression_metrics(truth = life_satisfaction, estimate = .pred)
+```
+
+
+## Example: Predicting internet use with a XGBoost
+
+* Using the ESS, you are interested in building a predictive model of `internet_use_time`, i.e., the minutes an individual spends on the internet per day. Please use the code above to built a RF model to predict this outcome. Importantly, you are free to use the exact same predictors or add new ones. How well can you predict the outcome?
+
+```{r 10-tree-based-methods-11, message=FALSE}
+load(file = here("data/data_ess.Rdata"))
+
+# Take subset of variables to speed things up!
+  data <- data  %>%
+    select(internet_use_time,
+           unemployed,
+           trust_people,
+           education,
+           age,
+           religion,
+           subjective_health) %>%
+  mutate(religion = if_else(is.na(religion), "unknown", religion),
+         religion = as.factor(religion)) %>%
+    drop_na()
+
+
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(internet_use_time))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(internet_use_time) # ?drop_na
+  dim(data)
+
+# Split the data into training and test data
+  set.seed(100)
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+# Create resampled partitions
+  set.seed(345)
+  data_folds <- vfold_cv(data_train, v = 5) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+  
+  
+  
+  
+# Define recipe
+  recipe1 <- 
+    recipe(formula = internet_use_time ~ ., data = data_train) %>% 
+    step_nzv(all_predictors()) %>% # remove variables with zero variances
+    step_novel(all_nominal_predictors()) %>% # prepares data to handle previously unseen factor levels 
+    step_dummy(all_nominal_predictors()) %>% # dummy codes categorical variables
+    step_zv(all_predictors()) %>% # remove vars with only single value
+    step_normalize(all_predictors()) # normale predictors
+
+# Inspect the recipe
+  recipe1
+  
+  
+#  Specify model
+set.seed(100)
+model1 <- 
+  boost_tree(  mode = "regression",
+  trees = 200,
+  tree_depth = 5,
+  learn_rate = 0.05,
+  engine = "xgboost") %>% 
+  set_mode("regression")
+
+# Specify workflow
+workflow1 <- 
+  workflow() %>% 
+  add_recipe(recipe1) %>%
+  add_model(model1)
+  
+
+# Fit the random forest to the cross-validation datasets
+fit1 <- fit_resamples(
+  object = workflow1, # specify workflow
+  resamples = data_folds, # specify cv-datasets
+  metrics = metric_set(rmse, rsq, mae), # specify metrics to return
+  control = control_resamples(verbose = TRUE, # show live comments
+                              save_pred = TRUE, # save predictions
+                              extract = function(x) extract_fit_engine(x))) # save models
+
+
+# RMSE and RSQ
+collect_metrics(fit1)
+
+# Collect average predictions
+assessment_data_predictions <- collect_predictions(fit1, summarize = TRUE)
+assessment_data_predictions
+
+
+# Visualize actual vs. predicted values
+assessment_data_predictions %>% 
+  ggplot(aes(x = internet_use_time, y = .pred)) + 
+  geom_point(alpha = .15) +
+  #geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Internet use time (minutes per day): Predicted values") +
+  xlab("Internet use time (minutes per day): Actual values") +
+  ggtitle("Predictions: Training data")
+
+
+
+# Fit final model
+fit_final <- fit(workflow1, data = data_train)
+
+# Check accuracy in for complete training data
+  augment(fit_final, new_data = data_train) %>%
+    mae(truth = internet_use_time, estimate = .pred)
+  
+  
+# Visualize variable importance
+fit_final$fit$fit$fit %>%
+    vip::vip(geom = "point") +
+  ylab("Importance of different predictors")+
+  xlab("Variables")
+
+
+
+# Test data: Predictions + accuracy
+  regression_metrics <- metric_set(mae, rmse, rsq) # Use several metrics
+  
+  augment(fit_final , new_data = data_test) %>%
+    regression_metrics(truth = internet_use_time, estimate = .pred)
+```
+
+
+## Example: Classification with Random Forests
+
+Below you can find and example of building a random forest model for our binary outcome recidivism (without resampling).
+
+```{r 06-classification-12}
+load(file = here("data/data_compas.Rdata"))
+```
+
+
+```{r 10-tree-based-methods-3234 }
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(is_recid_factor))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(is_recid_factor) # ?drop_na
+  dim(data)
+
+# Split the data into training and test data
+  set.seed(100)
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+# Create resampled partitions
+  set.seed(345)
+  data_folds <- vfold_cv(data_train, v = 5) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+
+
+## Step 3: Specify recipe, model and workflow
+
+
+# Define recipe
+recipe1 <- 
+  recipe(formula = is_recid_factor ~ age + priors_count + sex + juv_fel_count + juv_misd_count + juv_other_count, data = data_train) %>% 
+    step_filter_missing(all_predictors(), threshold = 0.01) %>% 
+    step_naomit(is_recid_factor, all_predictors()) %>% # better deal with missings beforehand
+    step_nzv(all_predictors(), freq_cut = 0, unique_cut = 0) %>% # remove variables with zero variances
+    step_dummy(all_nominal_predictors())
+
+  # Inspect the recipe
+    recipe1
+  
+  # Check preprocessed data
+    data_preprocessed <- prep(recipe1, data_train)$template
+    dim(data_preprocessed)
+
+# show engines/package that include random forest
+show_engines("rand_forest")
+
+# Specify model
+model1 <- 
+  rand_forest(trees = 1000) %>% # grow 1000 trees!
+  set_engine("ranger", 
+             importance = "permutation") %>% 
+  set_mode("classification")
+
+# Specify workflow
+workflow1 <- 
+  workflow() %>% 
+  add_recipe(recipe1) %>%
+  add_model(model1)
+
+
+## Step 4: Fit/train & evalute model using resampling
+
+# Fit the random forest to the cross-validation datasets
+fit1 <- workflow1 %>% 
+  fit_resamples(resamples = data_folds, # specify cv-datasets
+  metrics = metric_set(accuracy, precision, recall, f_meas)) # save models
+
+# RMSE and RSQ
+collect_metrics(fit1)
+
+## Step 5: Fit final model to training data
+
+
+# Fit final model
+fit_final <- fit(workflow1, data = data_train)
+
+# Check accuracy in for full training data
+  metrics_combined <- 
+    metric_set(accuracy, precision, recall, f_meas) # Set accuracy metrics
+
+  data_train %>%
+    augment(x = fit_final, type.predict = "response") %>%
+        metrics_combined(truth = is_recid_factor, estimate = .pred_class)
+
+
+# Confusion matrix
+  data_train %>%
+    augment(x = fit_final, type.predict = "response") %>%
+        conf_mat(truth = is_recid_factor, estimate = .pred_class)
+  
+
+# Visualize variable importance
+fit_final$fit$fit$fit %>%
+    vip::vip(geom = "point") +
+  ylab("Importance of different predictors")+
+  xlab("Variables")
+
+
+
+# Test data: Predictions + accuracy
+  data_test %>%
+    augment(x = fit_final, type.predict = "response") %>%
+        metrics_combined(truth = is_recid_factor, estimate = .pred_class)
+```
+
+
+
+# 5. Tuning models
+
+## Tuning a random forest {#sec-tuning-rf}
+
+### Step 1: Loading, renaming and recoding
+
+```{r 11-tuning-models-5}
+load(file = here("data/data_ess.Rdata"))
+```
+
+
+```{r 11-tuning-models-6 }
+# Take subset of variables to speed things up!
+  data <- data  %>%
+    select(life_satisfaction,
+           unemployed,
+           trust_people,
+           education,
+           age,
+           religion,
+           subjective_health) %>%
+  mutate(religion = if_else(is.na(religion), "unknown", religion),
+         religion = as.factor(religion)) %>%
+    drop_na()
+```
+
+
+### Step 2: Prepare & split the data
+
+```{r 11-tuning-models-7 }
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+  
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+
+# STEP 2
+  # Split the data into training and test data
+    data_split <- initial_split(data, prop = 0.80)
+    data_split # Inspect
+  
+  # Extract the two datasets
+    data_train <- training(data_split)
+    data_test <- testing(data_split) # Do not touch until the end!
+  
+  # Create resampled partitions
+    set.seed(345)
+    data_folds <- vfold_cv(data_train, v = 2) # V-fold/k-fold cross-validation
+    data_folds # data_folds now contains several resamples of our training data  
+```
+
+
+### Step 3: Specify recipe, model, workflow and tuning parameters
+
+Similar to ridge or lasso regression a random forest has parameters that we can try to tune. Below, we create a model specification for a RF where we will tune...
+
+- **Number of Predictors to Sample at Each Split** (`mtry`): This hyperparameter controls the number of predictors randomly sampled at each split in the decision tree building process. A **smaller value** of `mtry` can lead to **less correlation between individual trees** in the forest, **potentially reducing overfitting**, but it may also increase the randomness in the model. Conversely, a **larger value** of `mtry` can lead to **stronger individual trees** but might increase the **risk of overfitting**. Typically, you can try different values of `mtry` and choose the one that provides the best performance based on cross-validation or other evaluation methods.
+- **Minimum Number of Observations in Each Node** (`min_n`): This hyperparameter determines the minimum number of observations required in a node for it to be eligible for further splitting. If a node has fewer than `min_n` observations, it won't be split further, effectively **controlling the depth and complexity of the trees**. Setting a **higher value** of `min_n` can **help prevent overfitting by creating simpler trees**, but it **may also lead to underfitting**if set too high.
+
+These are hyperparameters that can’t be learned from data when training the model. ([cf. Source](https://juliasilge.com/blog/sf-trees-random-tuning/#build-model))
+
+
+```{r 11-tuning-models-8 }
+  # Define recipe
+  model_recipe <- 
+    recipe(formula = life_satisfaction ~ ., data = data_train) %>% 
+    step_naomit(life_satisfaction, all_predictors()) %>% # better deal with missings beforehand
+    step_nzv(all_predictors(), freq_cut = 0, unique_cut = 0) %>% # remove variables with zero variances
+    step_novel(all_nominal_predictors()) %>% # prepares data to handle previously unseen factor levels 
+    #step_unknown(all_nominal_predictors()) %>% # categorizes missing categorical data (NA's) as `unknown`
+    step_dummy(all_nominal_predictors(), -has_role("id vars")) %>% # dummy codes categorical variables
+    step_zv(all_predictors()) %>% # remove vars with only single value
+    step_normalize(all_predictors()) # normale predictors
+  
+  # Inspect the recipe
+    model_recipe
+
+
+# Specify model with tuning
+model1 <- rand_forest(
+  mtry = tune(), # tune mtry parameter (number of predictors to sample at each split)
+  trees = 1000, # grow 1000 trees
+  min_n = tune() # tune min_n parameter (min N in Node to split)
+) %>%
+  set_mode("regression") %>%
+  set_engine("ranger",
+             importance = "permutation") # potentially computational intensive
+
+
+# Specify workflow (with tuning)
+workflow1 <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(model1)
+```
+
+
+### Step 4: Tune, evaluate the model using resampling and choose/explore the best model
+
+#### Tune, evaluate the model using resampling {#sec-tuning-rf-refinement}
+Below we use `tune_grid()` to compute performance metrics (e.g. accuracy or RMSE) for pre-defined set of tuning parameters that correspond to a model or recipe across one or more resamples of the data (below 10 stored in `data_folds`).
+
+```{r 11-tuning-models-9 }
+
+# Specify to use parallel processing
+doParallel::registerDoParallel()
+
+set.seed(345)
+tune_result <- tune_grid(
+  workflow1,
+  resamples = data_folds,
+  grid = 5 # choose 10 grid points automatically
+)
+
+tune_result
+
+```
+
+Visualizing the results helps us to evaluate the tuning results. @fig-tune-rf indicates that higher values of `min_n` and lower values of `mtry` seem to work better in terms of accuracy.
+
+```{r 11-tuning-models-10 }
+#| label: fig-tune-rf
+#| fig-cap: "Tuning: RMSE across different parameter values of min_n and mtry"
+tune_result %>%
+  collect_metrics() %>% # extract metrics
+  filter(.metric == "rmse") %>% # keep rmse only
+  select(mean, min_n, mtry) %>% # subset variables
+  pivot_longer(min_n:mtry, # convert to longer
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) + # plot!
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "RMSE")
+```
+
+After getting this first glimpse in @fig-tune-rf we might want to make further changes to the grid values that we use for tuning. Below we pick ranges that turned out to be better in @fig-tune-rf:
+
+```{r 11-tuning-models-11 }
+grid1 <- grid_regular(
+  mtry(range = c(0, 10)), # define range for mtry
+  min_n(range = c(20, 40)), # define range for min_n
+  levels = 4 # number of values of each parameter to use to make the regular grid
+)
+
+grid1
+```
+
+Then we re-do the tuning using those values:
+
+```{r 11-tuning-models-12 }
+set.seed(456)
+tune_result2 <- tune_grid(
+  workflow1,
+  resamples = data_folds,
+  grid = grid1
+)
+
+tune_result2
+```
+
+Again we visualize the results in @fig-tune-rf2:
+
+```{r 11-tuning-models-13 }
+#| label: fig-tune-rf2
+#| fig-cap: "Tuning: RMSE across different parameter values of min_n and mtry"
+tune_result2 %>%
+  collect_metrics() %>%
+  filter(.metric == "rmse") %>%
+  select(mean, min_n, mtry) %>%
+  pivot_longer(min_n:mtry,
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "RMSE")
+```
+
+#### Choose best model after tuning
+
+Choosing the best model, i.e., the model with the best parameter choices obtained in the tuning above (`tune_result2`), can be done with the `select_best()` function. After having selected the best parameter values, we update our original model specification stored in `model1` using the `finalize_model()`  function.
+
+```{r 11-tuning-models-14 }
+# Find tuning parameter combination with best performance values
+best_hyperparameters <- select_best(tune_result2, metric = "rmse")
+
+# Take list/tibble of tuning parameter values
+# and update model1 with those values.
+model_final <- finalize_model(model1,
+                              parameters = best_hyperparameters # define 
+                              )
+```
+
+
+
+### Step 5: Fit final model to training data and assess accuracy 
+
+Once we are happy with our tuned random forest model and have chosen the best model specification stored in `model_final` we can fit our workflow to the training data `data_train` again and also assess it's accuracy again.
+
+
+```{r 11-tuning-models-15 }
+# Define final workflow
+workflow_final <- workflow() %>%
+  add_recipe(model_recipe) %>% #  use standard recipe
+  add_model(model_final) # use final model
+
+# Fit final model
+fit_final <- fit(workflow_final, data = data_train)
+fit_final
+# Q: What do the values for `mtry` and `min_n` in the final model mean? 
+
+# Check accuracy in training data using MAE
+  augment(fit_final, new_data = data_train) %>%
+    mae(truth = life_satisfaction, estimate = .pred)
+```
+
+Now, that we have our final model we can also explore it assessing variable importance (i.e., which variables where the most relevant to find splits) using the `vip` package. We can use `vi()` and `vip()` to extract or extract+plot the variable importance of different predictors as shown in @tbl-vip and @fig-vip. The `vi()` and `vip()` function does only like objects of class ranger, hence we have to directly access is in the layer object using `fit_final$fit$fit$fit`
+
+```{r 11-tuning-models-16 }
+#| label: tbl-vip
+#| tbl-cap: "Variable importance for different predictors"
+
+# Visualize variable importance
+fit_final$fit$fit %>%
+    vip::vi() %>%
+  kable()
+```
+
+
+
+```{r 11-tuning-models-17 }
+#| label: fig-vip
+#| fig-cap: "Variable importance for different predictors"
+
+fit_final$fit$fit %>%
+  vip(geom = "point")
+```
+
+
+### Step 6: Fit final model to test data and assess accuracy
+
+We then evaluate the accuracy of this model which is based on the training data using the test data `data_test`. We use `augment()` to obtain the predictions: 
+
+```{r 11-tuning-models-18 }
+# Use fitted model to predict values  
+  augment(fit_final, new_data = data_test)
+```
+
+<br><br>
+And can directly pipe the result into functions such as `rsq()`, `rmse()` and `mae()` to obtain the corresponding measures of accuracy in the test data `data_test`.
+
+```{r 11-tuning-models-19 }
+augment(fit_final, new_data = data_test) %>%
+  rsq(truth = life_satisfaction, estimate = .pred)
+
+augment(fit_final, new_data = data_test) %>%
+  rmse(truth = life_satisfaction, estimate = .pred)
+  
+augment(fit_final, new_data = data_test) %>%
+    mae(truth = life_satisfaction, estimate = .pred)
+```
+
+The corresponding accuracy measures can now be compared to those of an untuned random forest model.
+
+
+## Tuning ridge regression
+
+We first import the data into R:
+
+```{r 11-tuning-models-21}
+load(file = here("data/data_ess.Rdata"))
+```
+
+
+```{r 11-tuning-models-22 }
+# Drop missings on outcome variable
+  data <- data %>% 
+  drop_na(life_satisfaction) %>%
+  select(where(~mean(is.na(.)) < 0.1))  %>%
+    na.omit()
+
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+# Create resampled partitions
+  set.seed(345)
+  data_folds <- vfold_cv(data_train, v = 2) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+  # You can also try loo_cv(data_train) instead
+
+# Define recipe
+recipe1 <- 
+  recipe(formula = life_satisfaction ~ ., data = data_train) %>% 
+  update_role(respondent_id, new_role = "ID") %>% 
+  # step_naomit(all_predictors()) %>% # we did this above
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_predictors()) %>% # remove any numeric variables that have zero variance.
+  step_normalize(all_numeric(), -all_outcomes()) # normalize (center and scale) the numeric variables. We need to do this because it’s important for lasso regularization
+
+
+```
+
+Then we specify the model. It's similar to previous labs only that we set `penalty = tune()` to tell `tune_grid()` that the penalty parameter should be tuned.
+
+
+```{r 11-tuning-models-23 }
+# Define model
+model1 <- 
+  linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+```
+
+Then we define a workflow called `workflow1` that includes our recipe and model specification.
+
+```{r 11-tuning-models-24 }
+# Define workflow
+workflow1 <- workflow() %>% 
+  add_recipe(recipe1) %>% 
+  add_model(model1)
+```
+
+And we use `grid_regular()` to create a grid of evenly spaced parameter values. In it we use the `penalty()` function (`dials` package) to denote the parameter and set the range of the grid. Computation is fast so we can choose a fine-grained grid with 50 levels.
+
+```{r 11-tuning-models-25 }
+# Set up grid for search
+penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 10)
+penalty_grid
+```
+
+Then we can fit all our models using the resamples in data_folds using the tune_grid function.
+
+```{r 11-tuning-models-26 }
+# Tune the model
+tune_result <- tune_grid(
+  workflow1,
+  resamples = data_folds, 
+  grid = penalty_grid
+)
+
+tune_result # display result
+```
+
+And use autoplot to visualize the results.
+
+```{r 11-tuning-models-27 }
+# Visualize tuning results
+autoplot(tune_result)
+```
+
+It visualizes how the performance metrics are impacted by our parameter choice of the regularization parameter, i.e, penalty $\lambda$.
+
+We can also collect the metrics:
+
+```{r 11-tuning-models-28 }
+# Collect metrics
+collect_metrics(tune_result)
+```
+
+Afterwards `select_best()` can be used to extract the best parameter value.
+
+```{r 11-tuning-models-29 }
+# Extract best penalty after tuning
+best_penalty <- select_best(tune_result, metric = "rsq")
+best_penalty
+```
+
+**Finalize workflow, assess accuracy and extract predicted values**
+
+Finally, we can update our workflow with `finalize_workflow()` and set the penalty to `best_penalty` that we stored above, and fit the model on our training data.
+
+```{r 11-tuning-models-30 }
+# Define final workflow
+workflow_final <- finalize_workflow(workflow1, best_penalty)
+workflow_final
+
+# Fit the model
+fit_final <- fit(workflow_final, data = data_train)
+```
+
+We then evaluate the accuracy of this model (that is based on the training data) using the test data `data_test`. We use `augment()` to obtain the predictions: 
+
+```{r 11-tuning-models-31 }
+# Use fitted model to predict values  
+  augment(fit_final, new_data = data_test)
+```
+
+And can directly pipe the result into functions such as `rsq()`, `rmse()` and `mae()` to obtain the corresponding measures of accuracy.
+
+```{r 11-tuning-models-32 }
+augment(fit_final, new_data = data_test) %>%
+  rsq(truth = life_satisfaction, estimate = .pred)
+
+augment(fit_final, new_data = data_test) %>%
+  rmse(truth = life_satisfaction, estimate = .pred)
+  
+augment(fit_final, new_data = data_test) %>%
+    mae(truth = life_satisfaction, estimate = .pred)
+```
+
+
+## Tuning lasso
+
+```{r 11-tuning-models-33 }
+# Define the recipe
+recipe2 <- recipe(life_satisfaction ~ ., data = data_train) %>%
+    step_zv(all_numeric_predictors()) %>% # remove predictors with zero variance
+    step_normalize(all_numeric_predictors()) %>% # normalize predictors
+    step_dummy(all_nominal_predictors())
+
+# Specify the model
+model2 <- 
+  linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet") 
+
+# Define the workflow
+workflow2 <- workflow() %>% 
+  add_recipe(recipe2) %>% 
+  add_model(model2)
+
+# Define the penalty grid
+penalty_grid <- grid_regular(penalty(range = c(-2, 2)), levels = 50)
+
+# Tune the model and visualize
+  tune_result <- tune_grid(
+    workflow2,
+    resamples = data_folds, 
+    grid = penalty_grid
+  )
+  
+  autoplot(tune_result)
+
+# Select best penalty
+best_penalty <- select_best(tune_result, metric = "rsq")
+
+
+# Finalize workflow and fit model
+workflow_final <- finalize_workflow(workflow2, best_penalty)
+
+fit_final <- fit(workflow_final, data = data_train)
+
+
+# Check accuracy in training data
+  augment(fit_final, new_data = data_train) %>%
+    mae(truth = life_satisfaction, estimate = .pred)
+
+
+# Add predicted values to test data
+augment(fit_final, new_data = data_test)
+
+
+# Assess accuracy (RSQ)
+augment(fit_final, new_data = data_test) %>%
+  rsq(truth = life_satisfaction, estimate = .pred)
+
+# Assess accuracy (MAE)
+augment(fit_final, new_data = data_test) %>%
+  mae(truth = life_satisfaction, estimate = .pred)
+
+```
+
+
+## Tuning XGBoost model
+
+Below we use XGBoost to built a predictive model of life satisfaction. See [here](https://www.tidyverse.org/blog/2023/08/validation-split-as-3-way-split/) for another example. And @sec-tuning-rf-refinement for and example of refining parameters after a first automated grid search.
+
+```{r 11-tuning-models-35}
+load(file = here("data/data_ess.Rdata"))
+```
+
+```{r 11-tuning-models-36, eval = FALSE}
+    set.seed(345)
+
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+  
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+
+# STEP 2
+  # Split the data into training and test data
+    data_split <- initial_split(data, prop = 0.80)
+    data_split # Inspect
+  
+  # Extract the two datasets
+    data_train <- training(data_split)
+    data_test <- testing(data_split) # Do not touch until the end!
+  
+  # Create resampled partitions
+    data_folds <- vfold_cv(data_train, v = 5) # V-fold/k-fold cross-validation
+    data_folds # data_folds now contains several resamples of our training data  
+
+  # Define recipe
+  recipe1 <- 
+    recipe(formula = life_satisfaction ~ ., data = data_train) %>% 
+    update_role(respondent_id, new_role = "ID") %>% # Declare ID variable
+    step_filter_missing(all_predictors(), threshold = 0.01) %>% 
+    step_naomit(life_satisfaction, all_predictors()) %>% # better deal with missings beforehand
+    step_nzv(all_predictors(), freq_cut = 0, unique_cut = 0) %>% # remove variables with zero variances
+    #step_novel(all_nominal_predictors()) %>% # prepares data to handle previously unseen factor levels 
+    step_unknown(all_nominal_predictors()) %>% # categorizes missing categorical data (NA's) as `unknown`
+    step_dummy(all_nominal_predictors())# %>% # dummy codes categorical variables
+    #step_zv(all_predictors()) %>% # remove vars with only single value
+    #step_normalize(all_predictors()) # normale predictors
+  
+  # Inspect the recipe
+    recipe1
+  
+  # Check preprocessed data
+    data_preprocessed <- prep(recipe1, data_train)$template
+    dim(data_preprocessed)
+
+
+# Specify model with tuning
+  model1 <- 
+  boost_tree(
+    trees = 1000,
+    min_n = tune(), # Tune (see ?details_boost_tree_xgboost)
+    mtry = tune(),  
+    stop_iter = tune(), 
+    learn_rate = 0.01, # Choose higher value for speed (e.g., 0.3)
+    loss_reduction = tune(),
+    sample_size = tune()
+  ) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+    
+
+# Specify workflow (with tuning)
+  workflow1 <- workflow() %>%
+    add_recipe(recipe1) %>%
+    add_model(model1)
+
+
+
+## Step 4: Tune, evaluate the model using resampling and choose/explore the best model
+
+
+# Specify to use parallel processing
+  doParallel::registerDoParallel()
+  
+  
+  tune_result <- tune_grid(
+    workflow1,
+    resamples = data_folds,
+    metrics = metric_set(mae, rmse, rsq), # Specify which metrics to calculate
+    grid = 5 # Choose grid points automatically; Pick lower value for speed
+  )
+
+  tune_result
+
+  
+# Show accuracy for different hyperparameters
+  tune_result %>%
+  collect_metrics()
+
+  
+# Visualize accuracy for different hyperparameters
+  tune_result %>%
+    collect_metrics() %>% # extract metrics
+    filter(.metric == "mae") %>% # keep mae only
+    select(mean, mtry:stop_iter) %>% # subset variables
+    pivot_longer(mtry:stop_iter, # convert to longer
+      values_to = "value",
+      names_to = "parameter"
+    ) %>%
+    ggplot(aes(value, mean, color = parameter)) + # plot!
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~parameter, scales = "free_x") +
+    labs(x = NULL, y = "MAE")
+
+
+## Choose best model after tuning (for final fit)
+
+
+# Find tuning parameter combination with best performance values
+  best_hyperparameters <- select_best(tune_result, metric = "mae")
+  best_hyperparameters
+
+  
+# Take list/tibble of tuning parameter values
+# and update model1 with those values.
+  model_final <- finalize_model(model1,
+                                parameters = best_hyperparameters # define 
+                                )
+
+## Step 5: Fit final model to training data and assess accuracy 
+
+# Define final workflow
+  workflow_final <- workflow() %>%
+    add_recipe(recipe1) %>% #  use standard recipe
+    add_model(model_final) # use final model
+
+# Fit final model
+  fit_final <- fit(workflow_final, data = data_train)
+  fit_final
+# Q: What do the values for `mtry` and `min_n` in the final model mean? 
+
+
+# Check accuracy in for full training data
+  metrics_combined <- metric_set(rsq, rmse, mae) # Set accuracy metrics
+
+  augment(fit_final, new_data = data_train) %>%
+      metrics_combined(truth = life_satisfaction, estimate = .pred)  
+  
+  
+
+# Visualize variable importance
+  fit_final$fit$fit %>%
+      vip::vi() %>%
+    kable()
+
+
+fit_final$fit$fit %>%
+  vip(geom = "point")
+
+
+
+## Step 6: Fit final model to test data and assess accuracy
+  augment(fit_final, new_data = data_test) %>%
+      metrics_combined(truth = life_satisfaction, estimate = .pred)  
+```
+
+

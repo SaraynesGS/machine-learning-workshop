@@ -1,0 +1,67 @@
+---
+title: "Machine Learning Intro"
+author: "Patrick"
+format: html
+editor: source
+---
+
+# Load required packages and data
+
+```{r}
+#| warning: false
+#| message: false
+library(tidyverse)
+library(tidymodels)
+
+load(here::here("data/data_ess.Rdata"))
+glimpse(data)
+```
+
+# Let's build our first ML model for a regression problem!
+
+```{r}
+## remove data with missing outcome
+data <- data %>% 
+  drop_na(life_satisfaction)
+dim(data)
+
+## Split the data into training and test set
+data_split <- initial_split(data, prop = 0.8)
+data_split
+
+## Extract the two datasets
+data_train <- training(data_split)
+data_test <- testing(data_split)
+
+## Fit the model
+fit1 <- linear_reg() %>% # linear model
+  set_engine("lm") %>% # define lm package / function
+  set_mode("regression") %>% # define mode
+  fit(life_satisfaction ~ unemployed + age + education,
+      data = data_train) # fit the model
+fit1
+```
+
+We evaluate the performance based on the accuracy in the training data
+
+```{r}
+data_train <- augment(fit1, data_train)
+data_train %>% 
+  select(life_satisfaction, unemployed, age, education, .pred)
+```
+
+Let's look at the test data
+
+```{r}
+data_test <- augment(fit1, data_test)
+data_test %>% 
+  select(life_satisfaction, unemployed, age, education, .pred)
+```
+
+Test data metrics!
+
+```{r}
+data_test %>% 
+  metrics(truth = life_satisfaction, estimate = .pred)
+```
+

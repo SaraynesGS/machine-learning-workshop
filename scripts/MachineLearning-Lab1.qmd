@@ -1,0 +1,845 @@
+---
+title: "Introduction to Machine Learning in R"
+subtitle: "Lab 1: Introduction to Machine Learning in R"
+format: pdf
+toc: true
+bibliography: ["../slides/references.bib"]
+---
+
+\clearpage
+
+# Load required packages
+
+```{r 05-regression-1, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(DataExplorer)
+library(modelsummary)
+library(visdat)
+library(naniar)
+library(patchwork)
+```
+
+
+
+# 1. Machine Learning Intro: Regression using a Linear Model
+
+Learning outcomes/objective: Learn...
+
+- ...how to predict using a regression model relying on tidymodels.
+
+Sources: [#TidyTuesday and tidymodels](https://juliasilge.com/blog/intro-tidymodels/)
+
+
+## The data
+
+Below we'll use the [European Social Survey (ESS)](https://www.europeansocialsurvey.org/) [Round 10 - 2020. Democracy, Digital social contacts] to illustrate how to use linear models for machine learning. The ESS contains different outcomes amenable to both classification and regression as well as a lot of variables that could be used as features (~580 variables). And we'll focus on the french survey respondents.
+
+The variables were named not so well, so we have to rely on the codebook to understand their meaning. You can find it [here](https://drive.google.com/drive/folders/1tcjZxJImU2TyDV8awe-gQDDXof50VuSw?usp=sharing) or on the website of the ESS.
+
+- `life_satisfaction = stflife`: measures life satisfaction (How satisfied with life as a whole).
+- `unemployed_active = uempla`: measures unemployment (Doing last 7 days: unemployed, actively looking for job).
+- `unemployed = uempli`: measures life satisfaction (Doing last 7 days: unemployed, not actively looking for job).
+- `education = eisced`: measures education (Highest level of education, ES - ISCED).
+- `country = cntry`: measures a respondent's country of origin (here held constant for France).
+- etc.
+
+We first import the data into R:
+
+```{r 05-regression-7}
+load(file = here::here("data/data_ess.Rdata"))
+```
+
+
+## Inspecting the dataset
+
+First we should make sure to really explore/unterstand our data. How many observations are there? How many different variables (features) are there? What is the scale of the outcome (here we focus on life satisfaction)? What are the averages etc.? What kind of units are in your dataset?
+
+```{r 05-regression-9, echo=TRUE}
+#nrow(data)
+#ncol(data)
+dim(data)
+# str(data)
+# glimpse(data)
+# skimr::skim(data)
+```
+
+Also always inspect summary statistics for both numeric and categorical variables to get a better understanding of the data. Often such summary statistics will also reveal (coding) errors in the data. Here we take a subset because the are too many variables (>250).
+
+Q: Does anything strike you as interesting the two tables below?
+
+```{r 05-regression-10, echo=TRUE, warning = FALSE}
+data_summary <- data %>% 
+  select(life_satisfaction, unemployed_active, unemployed, education, age)
+datasummary_skim(data_summary, type = "numeric", output = "latex")
+# datasummary_skim(data_summary, type = "categorical", output = "html")
+```
+
+The `table()` function is also useful to get an overview of variables. Use the argument `useNA = "always"` to display potential missings.
+
+```{r 05-regression-11, echo=TRUE}
+table(data$life_satisfaction, useNA = "always")
+table(data$education, data$life_satisfaction, useNA = "always")
+round(prop.table(table(data$education, 
+                       data$life_satisfaction, useNA = "always")),2)
+```
+
+Finally, there are some helpful functions to explore missing data included in the `naniar` package. Here we do so for a subset of variables. Can you decode those graphs? What do they show? (for publications the design would need to be improved)
+
+```{r 05-regression-12, echo=TRUE}
+vis_miss(data %>% 
+                select(life_satisfaction, 
+                       unemployed_active, 
+                       unemployed, 
+                       education, 
+                       age))
+gg_miss_upset(data %>% 
+                select(life_satisfaction, 
+                       unemployed_active, 
+                       unemployed, 
+                       education, 
+                       age), nsets = 10, nintersects = 10) 
+```
+
+
+## Exploring potential predictors
+
+A correlation matrix can give us first hints regarding important predictors. 
+
+* Q: Can we identify anything interesting?
+
+```{r 05-regression-13, echo=TRUE}
+#| echo: true
+plot_correlation(data %>% dplyr::select(life_satisfaction, female, 
+                                        age, unemployed, 
+                                        internet_use_time, religion), 
+                 cor_args = list("use" = "pairwise.complete.obs"))
+
+```
+
+
+## Building a first linear ML model
+
+Below we estimate a simple linear machine learning model only using one split into training and test data. Beforehand we extract the subset of individuals for whom our outcome `life_satisfaction` is missing, store them `data_missing_outcome` and delete those individuals from the actual dataset `data`.
+
+```{r 05-regression-14 }
+
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+```
+
+Then we split the data into training and test data.
+
+```{r 05-regression-15 }
+  
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+```
+
+Subsequently, we estimate our linear model based on the training data. Below we just use 3 predictors:
+
+```{r 05-regression-16 }
+# Fit the model
+  fit1 <- linear_reg() %>% # linear model
+        set_engine("lm") %>% # define lm package/function
+        set_mode("regression") %>%# define mode
+        fit(life_satisfaction ~ unemployed + age + education, # fit the model
+        data = data_train) # based on training data
+  fit1
+  # summary(fit1$fit) # Access fit within the object
+```
+
+Then, we predict our outcome in the training data and evaluate the accuracy in the training data.
+
+```{r 05-regression-17 }
+# Training data: Add predictions 
+  data_train <- augment(fit1, data_train) 
+
+  head(data_train %>%
+      select(life_satisfaction, unemployed, age, education, .pred))
+
+# Training data: Metrics
+  data_train %>%
+      metrics(truth = life_satisfaction, estimate = .pred)
+  
+```
+
+* Q: How can we interpret the accuracy metrics? Are we happy? Or should we improve the model for the training data?
+
+Finally, we can also predict data for the test data and evaluate the accuracy in the test data.
+
+```{r 05-regression-18 }
+  
+# Test data: Add predictions 
+  data_test <- augment(fit1, data_test)
+
+  head(data_train %>%
+      select(life_satisfaction, unemployed, age, education, .pred))
+
+# Test data: Metrics
+  data_test %>%
+      metrics(truth = life_satisfaction, estimate = .pred)
+```
+
+Q: The accuracy seems similar to that in the training data. What could be the reasons? 
+
+- Answer: The split training data/test data was random and both datasets are "relatively" large. And we use a very inflexible model with few features that does not adapt a lot to the training data. With a more flexible model and smaller datasets, more adaption would happen leading to better accuracy in the trainning data (but potentially worse accuracy in the test data).
+
+If we are happy with the accuracy in the test data (the ultimate test for our predictive model) we could then use our model to predict the outcomes for those individuals for which we did not observe the outcome which we stored in `data_missing`.
+
+```{r 05-regression-19 }
+# Missing outcome data predictions
+  data_missing_outcome <- augment(fit1, data_missing_outcome) 
+
+  head(data_missing_outcome %>%
+      select(life_satisfaction, unemployed, age, education, .pred))
+
+# Replace missing outcome variable with the predictions
+data_missing_outcome <- data_missing_outcome %>% mutate(life_satisfaction = .pred)
+```
+
+
+## Visualizing predictions & errors
+
+It is often insightful to visualize a MLM's predictions, e..g, exploring whether our predictions are better or worse for certain population subsets (e.g., the young). In other words, whether the model works better/worse across groups. Below we take data_test from above (which includes the predictions) and calculate the errors and the absolute errors.
+
+```{r 05-regression-20 }
+data_test <- data_test %>%
+  mutate(errors = life_satisfaction - .pred, # calculate errors
+         errors_abs = abs(errors)) %>% # calculate absolute errors
+  select(life_satisfaction, unemployed, age, education, .pred, errors, errors_abs) # only keep relevant variables
+head(data_test)
+```
+
+
+@fig-prediction-error-his visualizes the variation of errors in a histogram. What can we see?^[Life satisfaction mostly underestimated -> positive errors.]
+
+```{r 05-regression-21 }
+#| label: fig-prediction-error-his
+#| fig-cap: "Histogram of errors/residuals"
+# Visualize errors and predictors
+ggplot(data = data_test,
+       aes(x = errors)) +
+  geom_histogram()
+```
+
+In @fig-prediction-error-covs we visualize the errors as a function of covariates/predictors after discretizing and factorizing the numeric variables. 
+
+Q: What can we observe? Why is the prediction error seemingly higher for the unemployed (= 1)?
+
+```{r 05-regression-22 }
+#| label: fig-prediction-error-covs
+#| fig-cap: "Visualizing prediction errors as a function of predictors/covariates"
+# Visualize errors and predictors
+data_plot <- data_test %>%
+  select(errors, errors_abs, unemployed, age, education) %>%
+  mutate(unemployed = factor(unemployed, ordered = FALSE),
+         education = factor(education, ordered = TRUE),
+         age = cut_interval(age, 8))
+
+
+p1 <- ggplot(data = data_plot, aes(y = errors, x = unemployed)) + 
+  geom_boxplot()
+p2 <- ggplot(data = data_plot, aes(y = errors, x = education)) + 
+  geom_boxplot()
+p3 <- ggplot(data = data_plot, aes(y = errors, x = age)) + 
+      geom_boxplot() + 
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+p1 + p2 + p3
+```
+
+
+## Exercise: Enhance simple linear model
+
+1. Use the code below to load the data.
+2. In the next chunk you find the code we used above to built our first predictive model for our outcome `life_satisfaction`. Please use the code and add further predictors to the model (maybe even `age^2`). Can you find a model with better accuracy in the training data (and better or worse accuracy in the test data?
+
+```{r 05-regression-24, eval=FALSE}
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+
+  
+  
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+# Fit the model
+  fit1 <- linear_reg() %>% # linear model
+        set_engine("lm") %>% # define lm package/function
+        set_mode("regression") %>%# define mode
+        fit(life_satisfaction ~ unemployed + age + education + religion, # fit the model
+        data = data_train) # based on training data
+  fit1
+  # summary(fit1$fit) # Access fit within the object
+  
+
+# Training data: Add predictions 
+  data_train <- augment(fit1, data_train) 
+  
+  data_train %>%
+      select(life_satisfaction, unemployed, age, education, .pred) %>%
+          head()
+
+# Training data: Metrics
+   data_train %>%
+        metrics(truth = life_satisfaction, estimate = .pred)
+ 
+ 
+   
+# Test data: Add predictions 
+  data_test <- augment(fit1, data_test) 
+  
+  data_test %>%
+      select(life_satisfaction, unemployed, age, education, .pred) %>%
+          head()
+
+# Test data: Metrics
+   data_test %>%
+        metrics(truth = life_satisfaction, estimate = .pred)
+  
+```
+
+
+## Appendix: Same but trying to avoid tidymodels
+
+```{r 05-regression-25, eval=FALSE}
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(life_satisfaction))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(life_satisfaction) # ?drop_na
+  dim(data)
+
+  
+  
+# Split the data into training and test data
+  randomized_vector <- as.logical(rbinom(n = nrow(data), size = 1, prob = 0.2))
+  table(randomized_vector)
+  
+  
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- data[!randomized_vector,]
+  data_test <- data[randomized_vector,]
+  dim(data_train)
+  dim(data_test)
+  
+# Fit the model
+  fit1 <- lm(life_satisfaction ~ unemployed + age + education + religion,
+             data = data_train)
+
+
+# Training data: Add predictions 
+  data_train$.pred <- predict(fit1, data_train)
+  
+  head(data_train %>%
+         select(life_satisfaction, unemployed, age, education, .pred))
+
+# Training data: Metrics
+ data_train %>%
+    metrics(truth = life_satisfaction, estimate = .pred)
+ 
+ 
+# Test data: Add predictions 
+  data_test$.pred <- predict(fit1, data_test)
+  
+  head(data_test %>%
+         select(life_satisfaction, unemployed, age, education, .pred))
+
+  
+    
+  # After that calculate metrics for both training and test data!
+  # e.g., RMSE
+  sqrt(mean((data_train$life_satisfaction - data_train$.pred)^2, na.rm = TRUE))
+  sqrt(mean((data_test$life_satisfaction - data_test$.pred)^2, na.rm = TRUE))
+```
+
+
+
+# 2. Machine Learning Intro: Classification using a Logistic Model
+
+Learning outcomes/objective: Learn...
+
+-   ...how to use trainingset and validation dataset for ML in R.
+-   ...how to predict binary outcomes in R (using a simple logistic regression).
+-   ...how to assess accuracy in R (logistic regression).
+
+
+## Predicting Recidvism: Background story
+
+-   Background story by ProPublica: [Machine Bias](https://www.propublica.org/article/machine-bias-risk-assessments-in-criminal-sentencing/)
+    -   Methodology: [How We Analyzed the COMPAS Recidivism Algorithm](https://www.propublica.org/article/how-we-analyzed-the-compas-recidivism-algorithm)
+-   Replication and extension by @Dressel2018-gc: [The Accuracy, Fairness, and Limits of Predicting Recidivism](https://advances.sciencemag.org/content/4/1/eaao5580)
+    -   Abstract: "Algorithms for predicting recidivism are commonly used to assess a criminal defendant's likelihood of committing a crime. \[...\] used in pretrial, parole, and sentencing decisions. \[...\] **We show, however, that the widely used commercial risk assessment software COMPAS is no more accurate or fair than predictions made by people with little or no criminal justice expertise**. In addition, despite **COMPAS's collection of 137 features**, the **same accuracy can be achieved with a simple linear classifier with only two features**."
+-   Very nice lab by @Lee2020-sp: [Auditing the COMPAS Score: Predictive Modeling and Algorithmic Fairness](http://www.cs.toronto.edu/~guerzhoy/201s20/proj/proj1/soln.html)
+-   We will work with the corresponding data and use it to grasp various concepts underlying statistical/machine learning
+
+
+## The data
+
+Our lab is based on @Lee2020-sp and on @James2013-uy [Chap. 4.6.2] with various modifications. We will be using the dataset at [LINK](https://github.com/propublica/compas-analysis/raw/master/compas-scores-two-years.csv) that is described by @Angwin2016-yh. - It's data based on the COMPAS risk assessment tools (RAT). RATs are increasingly being used to assess a criminal defendant's probability of re-offending. While COMPAS seemingly uses a larger number of features/variables for the prediction, @Dressel2018-gc showed that a model that includes only a defendant's sex, age, and number of priors (prior offences) can be used to arrive at predictions of equivalent quality.
+
+
+### Overview of Compas dataset variables
+
+* `id`: ID of prisoner, numeric
+* `name`: Name of prisoner, factor
+* `compas_screening_date`: Date of compass screening, date
+* `decile_score`: the decile of the COMPAS score, numeric
+* `is_recid`: whether somone reoffended/recidivated (=1) or not (=0), numeric
+* `is_recid_factor`: same but factor variable
+* `age`: a continuous variable containing the age (in years) of the person, numeric
+* `age_cat`: age categorized
+* `priors_count`: number of prior crimes committed, numeric
+* `sex`: gender with levels "Female" and "Male", factor
+* `race`: race of the person, factor
+* `juv_fel_count`: number of juvenile felonies, numeric
+* `juv_misd_count`: number of juvenile misdemeanors, numeric
+* `juv_other_count`: number of prior juvenile convictions that are not considered either felonies or misdemeanors, numeric
+
+We first import the data into R:
+
+```{r 06-classification-11}
+load(file = here::here("data/data_compas.Rdata"))
+```
+
+
+## Inspecting the dataset
+
+The variables were named quite well, so that they are often self-explanatory:
+
+- `decile_score` is the COMPAS score
+- `is_recid` wether someone reoffended (1 = recidividate = reoffend, 0 = NOT)
+- `race` contains the race
+- `age` contains age.
+- `priors_count` contains the number of prior offenses
+- etc.
+
+First we should make sure to really explore/unterstand our data. How many observations are there? How many different variables (features) are there? What is the scale of the outcome? What are the averages etc.? What kind of units are in your dataset?
+
+```{r 06-classification-13, echo=TRUE}
+nrow(data)
+ncol(data)
+dim(data)
+str(data) # Better use glimpse()
+# glimpse(data)
+# skimr::skim(data)
+```
+
+Also always inspect summary statistics for both numeric and categorical variables to get a better understanding of the data. Often such summary statistics will also reveal errors in the data.
+
+Q: Does anything strike you as interesting the two tables below?
+
+```{r 06-classification-14, echo=TRUE}
+datasummary_skim(data, type = "numeric", output = "latex")
+datasummary_skim(data, type = "categorical", output = "latex")
+```
+
+The `table()` function is also useful to get an overview of variables. Use the argument `useNA = "always"` to display potential missings.
+
+```{r 06-classification-15, echo=TRUE}
+table(data$race, useNA = "always")
+table(data$is_recid, data$is_recid_factor)
+table(data$decile_score)
+```
+
+Finally, there are some helpful functions to explore missing data included in the `naniar` package. Can you decode those graphs? What do they show? (for publications the design would need to be improved)
+
+```{r 06-classification-16, echo=TRUE}
+vis_miss(data)
+gg_miss_upset(data, nsets = 2, nintersects = 10) 
+# Ideally, use higher number of nsets/nintersects 
+# with more screen space
+```
+
+
+## Exploring potential predictors
+
+A correlation matrix can give us first hints regarding important predictors. 
+
+* Q: Can we identify anything interesting?
+
+```{r 06-classification-17, echo=TRUE}
+plot_correlation(data %>% dplyr::select(is_recid, age, 
+                                        priors_count,sex, 
+                                        race,
+                                        juv_fel_count), 
+                 cor_args = list("use" = "pairwise.complete.obs"))
+```
+
+
+## Building a first logistic ML model
+
+Below we estimate a simple logistic regression machine learning model only using one split into training and test data. To start, we check whether there are any missings on our outcome variable `is_recid_factor` (we use the factor version of our outcome variable). We extract the subset of individuals for whom our outcome `is_recid_factor` is missing, store them `data_missing_outcome` and delete those individuals from the actual dataset `data`.
+
+```{r 06-classification-18 }
+
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(is_recid_factor))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(is_recid_factor) # ?drop_na
+  dim(data)
+```
+
+Then we split the data into training and test data.
+
+```{r 06-classification-19 }
+  
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+  dim(data_train)
+  dim(data_test)
+```
+
+Subsequently, we estimate our linear model based on the training data. Below we just use 1 predictor:
+
+```{r 06-classification-20 }
+# Fit the model
+  fit1 <- logistic_reg() %>% # logistic model
+        set_engine("glm") %>% # define lm package/function
+        set_mode("classification") %>%# define mode
+        fit(is_recid_factor ~ age, # fit the model
+        data = data_train) # based on training data
+  fit1 # Class model output with summary(fit1$fit)
+```
+
+Then, we predict our outcome in the training data and evaluate the accuracy in the training data.
+
+* Q: How can we interpret the accuracy metrics? Are we happy?
+
+```{r 06-classification-21 }
+# Training data: Add predictions 
+data_train %>%
+  augment(x = fit1, type.predict = "response") %>%
+    select(is_recid_factor, age, .pred_class, .pred_no, .pred_yes) %>%
+      head()
+
+# Cross-classification table (Columns = Truth, Rows = Predicted)
+data_train %>%
+  augment(x = fit1, type.predict = "response") %>%
+      conf_mat(truth = is_recid_factor, estimate = .pred_class)
+  
+# Training data: Metrics
+data_train %>%
+  augment(x = fit1, type.predict = "response") %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+
+# F-1 Score
+data_train %>%
+  augment(x = fit1, type.predict = "response") %>%
+      f_meas(truth = is_recid_factor, estimate = .pred_class)
+  
+```
+
+Note: Kappa is a similar measure to accuracy(), but is normalized by the accuracy that would be expected by chance alone and is very useful when one or more classes have large frequency distributions.
+
+Finally, we can also predict data for the test data and evaluate the accuracy in the test data.
+
+```{r 06-classification-22 }
+  
+# Test data: Add predictions 
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+    select(is_recid_factor, age, .pred_class, .pred_no, .pred_yes) %>%
+      head()
+
+# Cross-classification table (Columns = Truth, Rows = Predicted)
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      conf_mat(truth = is_recid_factor, estimate = .pred_class)
+  
+
+  
+# Test data: Metrics
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+```
+
+
+Possible reasons if accuracy is higher on test data than training data:
+
+- **Bad training accuracy**: Already bad accuracy in training data is easy to beat.
+- **Small Dataset**: Test set may contain easier examples due to small dataset size.
+- **Overfitting to Test Data**: Repeated tweaking against the same test set can lead to overfitting.
+- **Data Leakage**: Information from the test set influencing the model during training.
+- **Strong Regularization**: Techniques like dropout can make the model generalize better but underperform on training data.
+- **Evaluation Methodology**: The splitting method can affect results, e.g., stratified splits.
+- **Random Variation**: Small test sets can lead to non-representative results.
+- **Improper Training**: Inadequate training epochs or improper learning rates.
+
+Below code to visualize the ROC-curve. The function `roc_curve()` calculates the data for the ROC curve. 
+
+```{r 06-classification-23}
+#| label: tbl-data-roc-curve
+#| tbl-cap: "Data: ROC curve - threshold, specificity, sensitivity"
+# Calculate data for ROC curve - threshold, specificity, sensitivity
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      roc_curve(truth = is_recid_factor, .pred_no) %>%
+  head() %>% knitr::kable()
+```
+
+
+We can then visualize is using `autoplot()`. Since it's a ggplot we can make change labels etc. with `+`. Subsequently, we can use `roc_auc()` to calculate the area under the curve.
+
+
+```{r 06-classification-24}
+# Calculate data for ROC curve - threshold, specificity, sensitivity
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      roc_curve(truth = is_recid_factor, .pred_no) %>%
+  head()
+
+# Calculate data for ROC curve and visualize
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      roc_curve(truth = is_recid_factor, .pred_no)  %>% # Default: Uses first class (=0=no)
+  autoplot() +
+  xlab("False Positive Rate (FPR, 1 - specificity)") +
+  ylab("True Positive Rate (TPR, sensitivity, recall)")
+
+# Calculate are under the curve
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      roc_auc(truth = is_recid_factor, .pred_no)
+```
+
+If we are happy with the accuracy in the training data we could then use our model to predict the outcomes for those individuals for which we did not observe the outcome which we stored in `data_missing`.
+
+```{r 06-classification-25 }
+# Missing outcome data predictions
+  data_missing_outcome <- data_missing_outcome %>%
+                                augment(x = fit1, type.predict = "response") 
+
+  data_missing_outcome %>%
+    select(is_recid_factor, age, .pred_class, .pred_no, .pred_yes) %>%
+        head()
+```
+
+
+## Visualizing predictions
+
+It is often insightful to visualize a MLM's predictions, e..g, exploring whether our predictions are better or worse for certain population subsets (e.g., the young). In other words, whether the model works better/worse across groups. Below we take data_test from above (which includes the predictions) and calculate the errors and the absolute errors.
+
+```{r 06-classification-26 }
+
+data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+        select(is_recid_factor, .pred_class, .pred_no, .pred_yes, age, sex, race, priors_count)
+```
+
+@fig-prediction-error-his2 visualizes the variation of the predicted probabilites. What can we see?
+
+
+```{r 06-classification-27 }
+#| label: fig-prediction-error-his2
+#| fig-cap: "Histogram of errors/residuals"
+# Visualize errors and predictors
+data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+ggplot(aes(x = .pred_yes)) +
+  geom_histogram() +
+  xlim(0,1)
+```
+
+In @fig-prediction-error-covs2 we visualize the predicted probability of recidivating as a function of covariates/predictors after discretizing and factorizing some variables. Imporantly, the ML model is only based on one of those variables namely `age`, hence, why the predictions do not vary that strongly with the other variables.
+
+Q: What can we observe? What problem does that point to?
+
+```{r 06-classification-28 }
+#| label: fig-prediction-error-covs2
+#| fig-cap: "Visualizing predicted probability (for recidvism = yes) as a function of predictors/covariates"
+# Visualize errors and predictors
+library(patchwork)
+library(ggplot2)
+data_plot <- data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+  select(.pred_yes, age, sex, race, priors_count) %>%
+  mutate(age = cut_interval(age, 8),
+         priors_count = as.factor(priors_count))
+
+
+p1 <- ggplot(data = data_plot, aes(y = .pred_yes, x = sex)) + 
+  geom_boxplot()
+p2 <- ggplot(data = data_plot, aes(y = .pred_yes, x =  age)) + 
+  geom_boxplot() + 
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+p3 <- ggplot(data = data_plot, aes(y = .pred_yes, x = race)) + 
+      geom_boxplot() + 
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+p4 <- ggplot(data = data_plot, aes(y = .pred_yes, x = priors_count)) + 
+      geom_boxplot() + 
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+p1 + p2 + p3 + p4
+```
+
+
+## Exercise: Enhance simple logistic model
+
+1. Use the code below to load the data.
+2. In the next chunk you find the code we used above to built our first predictive model for our outcome `is_recid_factor`. Please use the code and add further predictors to the model. Can you find a model with better accuracy picking further predictors?
+
+```{r 06-classification-31, eval=FALSE }
+
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(is_recid_factor))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(is_recid_factor) # ?drop_na
+  dim(data)
+
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+  
+# Fit the model
+  fit1 <- logistic_reg() %>% # logistic model
+        set_engine("glm") %>% # define lm package/function
+        set_mode("classification") %>%# define mode
+        fit(is_recid_factor ~ age, # fit the model
+        data = data_train) # based on training data
+  fit1
+
+# Training data: Add predictions 
+data_train %>%
+  augment(x = fit1, type.predict = "response") %>%
+    select(is_recid_factor, age, .pred_class, .pred_no, .pred_yes) %>%
+      head()
+
+# Cross-classification table (Columns = Truth, Rows = Predicted)
+data_train %>%
+  augment(x = fit1, type.predict = "response") %>%
+      conf_mat(truth = is_recid_factor, estimate = .pred_class)
+  
+# Training data: Metrics
+data_train %>%
+  augment(x = fit1, type.predict = "response") %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+
+
+
+# Test data: Add predictions 
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+    select(is_recid_factor, age, .pred_class, .pred_no, .pred_yes) %>%
+      head()
+
+# Cross-classification table (Columns = Truth, Rows = Predicted)
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      conf_mat(truth = is_recid_factor, estimate = .pred_class)
+  
+# Test data: Metrics
+  data_test %>%
+    augment(x = fit1, type.predict = "response") %>%
+      metrics(truth = is_recid_factor, estimate = .pred_class)
+```
+
+
+
+## Homework/Exercise:
+
+Above we used a logistic regression model to predict recidivism. In principle, we could also use a linear probability model, i.e., estimate a linear regression and convert the predicted probabilities to a predicted binary outcome variable later on.
+
+1. What might be a problem when we use a linear probability model to obtain predictions (see @James2013-uy, Figure, 4.2, p. 131)?
+2. Please use the code above (see next section below) but now change the model to a linear probability model using the same variables. How is the accuracy of the lp-model as compared to the logistic model? Did you expect that?
+
+* Tips
+    + The linear probability model is defined through `linear_reg() %>% set_engine('lm') %>% set_mode('regression')`
+    + The linear probability model provides a predicted probability that needs to be converted to a binary class variable at the end.
+    + The linear probability model requires a numeric outcome, i.e., use `is_recid` as outcome and only convert `is_recid` to a factor at the end (as well as the predicted class).    
+
+
+### Solution
+
+```{r 06-classification-34, eval=FALSE}
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% filter(is.na(is_recid))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(is_recid) # ?drop_na
+  dim(data)
+
+# Split the data into training and test data
+  data_split <- initial_split(data, prop = 0.80)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+  
+# Fit the model
+  fit1 <- linear_reg() %>% # logistic model
+        set_engine("lm") %>% # define lm package/function
+        set_mode("regression") %>%# define mode
+        fit(is_recid ~ age, # fit the model
+        data = data_train) # based on training data
+  fit1
+
+# Training data: Add predictions 
+  data_train <- augment(x = fit1, data_train) %>%
+  mutate(.pred_class = as.factor(ifelse(.pred>=0.5, 1, 0)),
+         is_recid = factor(is_recid))
+
+  head(data_train %>%
+      select(is_recid, is_recid_factor, age, .pred, .resid, .pred_class))
+
+# Training data: Metrics
+  data_train %>%
+      metrics(truth = is_recid, estimate = .pred_class)
+  
+  
+  
+# Test data: Add predictions 
+  data_test <- augment(x = fit1, data_test) %>%
+  mutate(.pred_class = as.factor(ifelse(.pred>=0.5, 1, 0)),
+         is_recid = factor(is_recid))
+
+  head(data_test %>%
+      select(is_recid, is_recid_factor, age, .pred, .resid, .pred_class))
+
+# Test data: Metrics
+  data_test %>%
+      metrics(truth = is_recid, estimate = .pred_class)  
+```
+
