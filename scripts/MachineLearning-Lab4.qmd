@@ -1,0 +1,399 @@
+---
+title: "Introduction to Machine Learning in R"
+subtitle: "Lab 4: Text Mining"
+format: pdf
+toc: true
+bibliography: ["../slides/references.bib"]
+---
+
+# Load Required Packages
+
+```{r 05-regression-1, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(tidymodels)
+library(ranger)
+library(vip)
+library(stm)
+library(textrecipes)
+library(kableExtra)
+```
+
+\clearpage
+
+
+# 1. Structural Topic Models
+
+This code is based on parts of the analyses presented in @kraft2023asking. The full replication files can be found on the Harvard Dataverse: https://doi.org/10.7910/DVN/OPW1XY. See also @kraft2024women for more details.
+
+```{r}
+load(here("data/data_anes.Rdata"))
+```
+
+First, we fit the structural topic model for all three ANES waves.
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+## ANES 2012 ----
+
+## Merge open-ended responses with main survey
+df2012 <- anes2012 %>% 
+  inner_join(tibble(caseid = oe2012$caseid,
+                    resp = apply(oe2012[,-1], 1, paste, collapse = " "))) %>% 
+  mutate(resp = str_trim(resp)) %>% 
+  filter(resp != "") %>% 
+  na.omit()
+
+## Text preprocessing
+tmp2012 <- textProcessor(
+  documents = df2012$resp,
+  metadata = dplyr::select(df2012, age, female, educ_cont, pid_cont, educ_pid),
+  customstopwords = readLines(here("data/stopwords.txt")),
+  verbose = FALSE
+)
+
+## Prepare documents, remove infrequent terms
+out2012 <- prepDocuments(
+  tmp2012$documents, 
+  tmp2012$vocab, 
+  tmp2012$meta, 
+  lower.thresh = 10,
+  verbose = FALSE
+)
+
+## Estimate structural topic model
+fit2012 <- stm(
+  out2012$documents, 
+  out2012$vocab, 
+  prevalence = as.matrix(out2012$meta), 
+  K = 50, 
+  seed = 12345,
+  verbose = FALSE
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+## ANES 2016 ----
+
+## Merge open-ended responses with main survey
+df2016 <- anes2016 %>% 
+  inner_join(tibble(caseid = oe2016$caseid,
+                    resp = apply(oe2016[,-1], 1, paste, collapse = " "))) %>% 
+  mutate(resp = str_trim(resp)) %>% 
+  filter(resp != "") %>% 
+  na.omit()
+
+## Text preprocessing
+tmp2016 <- textProcessor(
+  documents = df2016$resp,
+  metadata = dplyr::select(df2016, age, female, educ_cont, pid_cont, educ_pid),
+  customstopwords = readLines(here("data/stopwords.txt")),
+  verbose = FALSE
+)
+
+## Prepare documents, remove infrequent terms
+out2016 <- prepDocuments(
+  tmp2016$documents, 
+  tmp2016$vocab, 
+  tmp2016$meta, 
+  lower.thresh = 10,
+  verbose = FALSE
+)
+
+## Estimate structural topic model
+fit2016 <- stm(
+  out2016$documents, 
+  out2016$vocab, 
+  prevalence = as.matrix(out2016$meta), 
+  K = 50, 
+  seed = 12345,
+  verbose = FALSE
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+## ANES 2020 ----
+
+## Merge open-ended responses with main survey
+df2020 <- anes2020 %>% 
+  inner_join(tibble(caseid = oe2020$caseid,
+                    resp = apply(oe2020[,-1], 1, paste, collapse = " "))) %>% 
+  mutate(resp = str_trim(resp)) %>% 
+  filter(resp != "") %>% 
+  na.omit()
+
+## Text preprocessing
+tmp2020 <- textProcessor(
+  documents = df2020$resp,
+  metadata = dplyr::select(df2020, age, female, educ_cont, pid_cont, educ_pid),
+  customstopwords = readLines(here("data/stopwords.txt")),
+  verbose = FALSE
+)
+
+## Prepare documents, remove infrequent terms
+out2020 <- prepDocuments(
+  tmp2020$documents, 
+  tmp2020$vocab, 
+  tmp2020$meta, 
+  lower.thresh = 10,
+  verbose = FALSE
+)
+
+## Estimate structural topic model
+fit2020 <- stm(
+  out2020$documents, 
+  out2020$vocab, 
+  prevalence = as.matrix(out2020$meta), 
+  K = 50, 
+  seed = 12345,
+  verbose = FALSE
+)
+```
+
+Next, we estimate topic differences betwwn men and women.
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+## estimate topic prevalence effects
+prep2012 <- estimateEffect(~ age + female + educ_cont + pid_cont + educ_pid, 
+                           fit2012, meta = out2012$meta, uncertainty = "Global")
+prep2016 <- estimateEffect(~ age + female + educ_cont + pid_cont + educ_pid, 
+                           fit2016, meta = out2016$meta, uncertainty = "Global")
+prep2020 <- estimateEffect(~ age + female + educ_cont + pid_cont + educ_pid,
+                           fit2020, meta = out2020$meta, uncertainty = "Global")
+
+## select topics with largest gender effects
+tmp2012 <- tibble(estimate = sapply(summary(prep2012)$tables, 
+                                    function(x) x["female","Estimate"]), 
+                  topics = prep2012$topics) %>% arrange(estimate)
+topics2012 <- c(head(tmp2012$topics, 5), tail(tmp2012$topics, 5))
+tmp2016 <- tibble(estimate = sapply(summary(prep2016)$tables, 
+                                    function(x) x["female","Estimate"]), 
+                  topics = prep2016$topics) %>% arrange(estimate)
+topics2016 <- c(head(tmp2016$topics, 5), tail(tmp2016$topics, 5))
+tmp2020 <- tibble(estimate = sapply(summary(prep2020)$tables, 
+                                    function(x) x["female","Estimate"]), 
+                  topics = prep2020$topics) %>% arrange(estimate)
+topics2020 <- c(head(tmp2020$topics, 5), tail(tmp2020$topics, 5))
+
+## Visualize results: gender differences in topic proportions
+plot.estimateEffect(prep2012, covariate = "female", topics = topics2012, 
+                    model = fit2012, xlim = c(-.05,.015), method = "difference", 
+                    cov.value1 = 1, cov.value2 = 0, labeltype = "prob", n=5, 
+                    verbose.labels = F, width=50, main = "2012 ANES")
+plot.estimateEffect(prep2016, covariate = "female", topics = topics2016, 
+                    model = fit2016, xlim = c(-.05,.015), method = "difference", 
+                    cov.value1 = 1, cov.value2 = 0, labeltype = "prob", n=5, 
+                    verbose.labels = F, width=50, main = "2016 ANES")
+plot.estimateEffect(prep2020, covariate = "female", topics = topics2020, 
+                    model = fit2020, xlim = c(-.05,.015), method = "difference", 
+                    cov.value1 = 1, cov.value2 = 0, labeltype = "prob", n=5, 
+                    verbose.labels = F, width=50, main = "2020 ANES")
+```
+
+
+# 2. Text Classification
+
+This code is based on material provided by [Paul C. Bauer](https://bookdown.org/paul/computational_social_science/lab-random-forest-for-text-classification.html). The data comes from his project on measuring trust (see Landesvatter & Bauer (forthcoming) in *Sociological Methods & Research*). The data for the lab was pre-processed. 56 open-ended answers that revealed the respondent's profession, age, area of living/rown or others' specific names/categories, particular activities (e.g., town elections) or city were deleted for reasons of anonymity.
+
+-   **Research questions**: Do individuals interpret trust questions similar? Do they have a higher level if they **think of someone personally known** to them?
+    -   **Objective**: Predict whether they think of personally known person (yes/no).
+
+We start by loading our data that contains the following variables:
+
+-   `respondent_id`: Individual's identification number (there is only one response per individual - so it's also the id for the response)
+-   `social_trust_score`: Individual's value on the trust scale
+    -   Question: *Generally speaking, would you say that most people can betrusted, or that you can’t be too careful in dealing with people? Please tell me on a score of 0 to 6, where 0 means you can’t be too careful and 6 means that most people can be trusted.*
+        -   **Original scale**: 0 - You can't be too careful; 1; 2; 3; 4; 5; 6 - Most people can be trusted; Don’t know;
+        -   **Recoded scale**: `Don't know = NA` and values `0-6` standardized to `0-1`.
+-   `text`: Individual's response to the probing question
+    -   Question: *In answering the previous question, who came to your mind when you were thinking about 'most people?' Please describe.*
+-   `human_classified`: Variable that contains the manual human classification of whether person was thinking about **someone personally known to them or not** (this is based on the open-ended response to `text`)
+    -   `N = 295` were classified as `1 = yes`
+    -   `N = 666` were classified as `0 = no`
+    -   `N = 482` were not classified (we want to make predictions on those those!)
+
+The variable `human_classified` contains the values `NA` (was not classified), `1` (respondents were thinking about people known to them) and `0` (respondents were not thinking about people known to them).
+
+## Random Forest (with tuning) for text classification
+
+-   Steps
+    1.  Load and initial split of the data
+    2.  Create folds for cross-validation
+    3.  Define recipe (text preprocessing) & model (random forest + parameters to tune) & workflow
+    4.  **1st fitting & tuning session**: Fit model to resampled training data (folds) + tuning in parallel and inspect accuracy & tuning parameters afterwards
+    5.  If happy, `select_best` hyperparameters (identified in tuning), `finalize_model` the model with those parameters and create a final `workflow_final`. Train/fit `workflow_final` to the full training dataset and obtain `fit_final`.
+    6.  Use `fit_final` to predict outcome both in `data_train` and `data_test` and evaluate accuracy.
+    7.  To explore which predictors are important calcuculate and visualize variable importance.
+
+We first import the data into R:
+
+```{r 12-text-classification-15}
+load(file = here("data/data_text_trust.Rdata"))
+```
+
+```{r 12-text-classification-17 }
+# Extract data with missing outcome
+  data_missing_outcome <- data %>% 
+                  filter(is.na(human_classified))
+  dim(data_missing_outcome)
+
+# Omit individuals with missing outcome from data
+  data <- data %>% drop_na(human_classified) # ?drop_na
+  dim(data)
+
+  
+# 1.
+  
+# Split the data into training and test data
+  set.seed(345)
+  data_split <- initial_split(data, prop = 0.8)
+  data_split # Inspect
+
+# Extract the two datasets
+  data_train <- training(data_split)
+  data_test <- testing(data_split) # Do not touch until the end!
+
+  
+# 2.  
+  
+# Create resampled partitions of training data
+  data_folds <- vfold_cv(data_train, v = 2) # V-fold/k-fold cross-validation
+  data_folds # data_folds now contains several resamples of our training data  
+  
+  
+# 3.
+  
+# Define the recipe & model
+  recipe1 <-
+    recipe(human_classified ~ respondent_id + text, data = data_train) %>%
+    update_role(respondent_id, new_role = "id") %>% # update role
+    step_tokenize(text)  %>% # Tokenize text (split into words)
+    step_stopwords(text) %>% # Remove stopwords
+    step_stem(text) %>% # Text stemming
+    step_tokenfilter(text, max_tokens = 100) %>% # Filter max tokens
+    step_tf(text) # convert to term-feature matrix
+
+# Extract and preview data + recipe (direclty with $)
+  data_preprocessed <- prep(recipe1, data_train)$template
+  dim(data_preprocessed)
+  # View(data_preprocessed)
+  table(data_preprocessed[,3]) # first token frequency table
+  
+# Specify model with tuning
+model1 <- rand_forest(
+  mtry = tune(), # tune mtry parameter
+  trees = 1000, # grow 1000 trees
+  min_n = tune() # tune min_n parameter
+) %>%
+  set_mode("classification") %>%
+  set_engine("ranger",
+             importance = "permutation") # potentially computational intensive
+
+# Specify workflow (with tuning)
+workflow1 <- workflow() %>%
+  add_recipe(recipe1) %>%
+  add_model(model1)
+
+
+# 4. 1st fitting & tuning & evaluation of accuracy
+
+# Specify to use parallel processing
+doParallel::registerDoParallel()
+
+set.seed(345)
+tune_result <- tune_grid(
+  workflow1,
+  resamples = data_folds,
+  grid = 10 # choose 10 grid points automatically
+)
+
+tune_result
+
+tune_result %>%
+  collect_metrics() %>% # extract metrics
+  filter(.metric == "accuracy") %>% # keep accuracy only
+  select(mean, min_n, mtry) %>% # subset variables
+  pivot_longer(min_n:mtry, # convert to longer
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) + # plot!
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "accuracy")
+
+    
+# 5. Choose best model after tuning & fit/train
+
+  # Find tuning parameter combination with best performance values
+  best_accuracy <- select_best(tune_result, metric = "accuracy")
+  best_accuracy
+  
+  # Take list/tibble of tuning parameter values
+  # and update model1 with those values.
+  model_final <- finalize_model(model1, best_accuracy)
+  model_final
+  
+  
+# Define final workflow
+  workflow_final <- workflow() %>%
+    add_recipe(recipe1) %>% #  use standard recipe
+    add_model(model_final) # use final model
+  
+  # Fit final model
+  fit_final <- parsnip::fit(workflow_final, data = data_train)
+  fit_final
+  
+  
+# Q: What do the values for `mtry` and `min_n` in the final model mean? 
+
+# A:
+# mtry = An integer for the number of predictors that will be randomly sampled at each split when creating the tree models.
+# trees	= An integer for the number of trees contained in the ensemble.
+# min_n	= An integer for the minimum number of data points in a node that are required for the node to be split further.
+
+  
+# 6. Predict & evaluate accuracy (both in full training and test data)
+  metrics_combined <- 
+    metric_set(accuracy, precision, recall, f_meas) # Set accuracy metrics
+  
+# Accuracy: Full training data
+  augment(fit_final, new_data = data_train) %>% 
+  metrics_combined(truth = human_classified, estimate = .pred_class)  
+  
+# Cross-classification table
+  augment(fit_final, new_data = data_train) %>%
+      conf_mat(data = .,
+               truth = human_classified, estimate = .pred_class)  
+
+
+# Accuracy: Test data
+  augment(fit_final, new_data = data_test) %>% 
+  metrics_combined(truth = human_classified, estimate = .pred_class)  
+  
+# Cross-classification table
+  augment(fit_final, new_data = data_test) %>%
+      conf_mat(data = .,
+               truth = human_classified, estimate = .pred_class)
+    
+
+# 7.   Visualize variable importance
+
+  fit_final$fit$fit %>%
+      vip::vi() %>%
+    dplyr::slice(1:10) %>%
+    kable()
+   
+# Visualize variable importance
+  fit_final$fit$fit %>%
+    vip(geom = "point")
+```
+
+
+## Exercise
+
+-   In the lab above we used a random forest to built a classifier for our labelled text. Thereby we made different choice in preprocessing the texts. Please modify those choices (e.g., don't remove stopwords, change `max_tokens`). How does this affect the accuracy of your model (and the training process)?
+
+
+# References
